@@ -28,7 +28,6 @@ You can refer to [description](./docs/description.md)
   - WAL
 - Day 3 - Day 6
   - SSTable
-  - LRU
   - Memtable Builder
   - SSTable Manager
 - Day 7
@@ -57,9 +56,11 @@ goos: darwin
 goarch: arm64
 pkg: github.com/xmh1011/go-lsm/database
 cpu: Apple M1 Pro
-BenchmarkPut-8          2944513             46883 ns/op
-BenchmarkGet-8          143949501              248.1 ns/op
-BenchmarkDelete-8       1000000             56224 ns/op
+BenchmarkPut-8          2636866             36804 ns/op
+BenchmarkGet-8          141383065           244.8 ns/op
+BenchmarkDelete-8       1000000             35407 ns/op
+PASS
+ok      github.com/xmh1011/go-lsm/database      217.214s
 ```
 
 ```bash
@@ -70,14 +71,69 @@ make benchmark
 ==============================================
  测试目录   : /Users/xiaominghao/code/go-lsm/data
  写入数量   : 2000000
- 写入耗时   : 1m9.674734583s
- 写 ops/s   : 28704.81
- 写 ns/op   : 34837.37
+ 写入耗时   : 1m3.580591625s
+ 写 ops/s  : 31456.14
+ 写 ns/op  : 31790.30
  读取数量   : 1000
- 读取耗时   : 6m18.351693416s
- 读 ops/s   : 5286.09
- 读 ns/op   : 378351693.42
+ 读取耗时   : 6m32.999611375s
+ 读 ops/s  : 2.54
+ 读 ns/op  : 392999611.38
 ==============================================
+```
+
+## Data Directory
+
+```text
+[ 128]  data
+├── [ 288]  sstable
+│   ├── [ 192]  0-level
+│   │   ├── [1.7M]  134.sst
+│   │   ├── [1.7M]  135.sst
+│   │   ├── [1.7M]  136.sst
+│   │   └── [1.7M]  137.sst
+│   ├── [ 320]  1-level
+│   │   ├── [1.7M]  115.sst
+│   │   ├── [1.7M]  116.sst
+│   │   ├── [1.7M]  117.sst
+│   │   ├── [1.7M]  118.sst
+│   │   ├── [1.7M]  119.sst
+│   │   ├── [1.7M]  85.sst
+│   │   ├── [1.7M]  86.sst
+│   │   └── [1.7M]  87.sst
+│   ├── [ 576]  2-level
+│   │   ├── [1.7M]  100.sst
+│   │   ├── [1.7M]  101.sst
+│   │   ├── [1.7M]  102.sst
+│   │   ├── [1.7M]  103.sst
+│   │   ├── [1.7M]  104.sst
+│   │   ├── [1.7M]  125.sst
+│   │   ├── [1.7M]  126.sst
+│   │   ├── [1.7M]  127.sst
+│   │   ├── [1.7M]  128.sst
+│   │   ├── [1.7M]  129.sst
+│   │   ├── [1.7M]  94.sst
+│   │   ├── [1.7M]  95.sst
+│   │   ├── [1.7M]  96.sst
+│   │   ├── [1.7M]  97.sst
+│   │   ├── [1.7M]  98.sst
+│   │   └── [1.7M]  99.sst
+│   ├── [  96]  3-level
+│   │   └── [1.7M]  132.sst
+│   ├── [  64]  4-level
+│   ├── [  64]  5-level
+│   └── [  64]  6-level
+└── [ 416]  wal
+    ├── [1.6M]  29.wal
+    ├── [1.6M]  30.wal
+    ├── [1.6M]  31.wal
+    ├── [1.6M]  32.wal
+    ├── [1.6M]  33.wal
+    ├── [1.6M]  34.wal
+    ├── [1.6M]  35.wal
+    ├── [1.6M]  36.wal
+    ├── [1.6M]  37.wal
+    ├── [1.6M]  38.wal
+    └── [1.5M]  39.wal
 ```
 
 ## TODO List

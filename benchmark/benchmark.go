@@ -63,7 +63,7 @@ func main() {
 	}
 	elapsedRead := time.Since(startRead)
 
-	opsPerSecRead := float64(numPutOperations) / elapsedRead.Seconds()
+	opsPerSecRead := float64(numGetOperations) / elapsedRead.Seconds()
 	avgLatencyRead := float64(elapsedRead.Nanoseconds()) / float64(numGetOperations)
 
 	fmt.Println("==============================================")

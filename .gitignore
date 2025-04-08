@@ -17,6 +17,6 @@ stdout
 /coverage.out
 **/*.wal
 **/*.sst
-!/data/
+/data/
 bench_test.txt
 bench_custom.txt

@@ -118,87 +118,77 @@ func (m *Manager) AddTable(table *SSTable) {
 	}
 }
 
-// Seek 只查询内存中的 sstable
-func (m *Manager) Seek(key kv.Key) ([]byte, bool) {
-	// 1. 先复制出内存中的 SSTable 列表，减少锁持有时间
-	sstList := m.getAll()
-
-	// 2. 在不持锁的情况下执行 IO（打开文件、迭代器查找）
-	for _, sst := range sstList {
-		// 布隆过滤器先粗判
-		if !sst.MayContain(key) {
-			continue
-		}
-
-		var err error
-		sst.file, err = os.Open(sst.FilePath())
-		if err != nil {
-			log.Errorf("open file %s error: %s", sst.FilePath(), err.Error())
-			continue
-		}
-
-		it := NewSSTableIterator(sst)
-		it.Seek(key)
-		if it.Valid() && it.Key() == key {
-			val := it.Value()
-			sst.Close()
-
-			// 3. 命中后提升为 LRU 的 MRU（需要写锁）
-			m.mu.Lock()
-			if elem, ok := m.cache[sst.FilePath()]; ok {
-				m.lru.MoveToFront(elem)
-			}
-			m.mu.Unlock()
-
-			return val, true
-		}
-		sst.Close()
-	}
-
-	return nil, false
-}
-
 // Search 会先在内存(LRU)中查找，不命中再去 DiskMap
 func (m *Manager) Search(key kv.Key) ([]byte, error) {
-	if val, ok := m.Seek(key); ok {
-		return val, nil
-	}
-
-	// 从磁盘加载
-	m.mu.RLock()
-	copyDisk := make(map[int][]string, len(m.DiskMap))
-	for lvl, paths := range m.DiskMap {
-		tmp := make([]string, len(paths))
-		copy(tmp, paths)
-		copyDisk[lvl] = tmp
-	}
-	m.mu.RUnlock()
-
-	// 遍历各层
-	for level, files := range copyDisk {
-		for _, file := range files {
-			val, err := SearchFromFile(file, key)
-			if err != nil {
-				return nil, err
+	// 先从最低的 level 开始查找
+	for i := minSSTableLevel; i <= maxSSTableLevel; i++ {
+		files := m.getSortedFilesByLevel(i)
+		n := len(files)
+		for j := 0; j < len(files); j++ {
+			sst, ok := m.isFileInMemoryAndReturn(files[n-1-j])
+			if ok { // 如果在内存中
+				val, err := m.SearchFromTable(sst, key)
+				if err != nil {
+					log.Errorf("search from table error: %s", err.Error())
+					return nil, err
+				}
+				if val != nil {
+					return val, nil
+				}
+			} else { // 如果不在内存中
+				sst := NewSSTable()
+				err := sst.LoadMetaBlockToMemory(files[n-1-j])
+				if err != nil {
+					log.Errorf("decode metadata error: %s", err.Error())
+					return nil, err
+				}
+				val, err := m.SearchFromTable(sst, key)
+				if err != nil {
+					log.Errorf("search from table error: %s", err.Error())
+					return nil, err
+				}
+				if val != nil {
+					// 命中后添加到 LRU
+					m.AddTable(sst)
+					// 在 diskMap 中删除
+					m.removeFromDiskMap(sst.FilePath(), sst.level)
+					return val, nil
+				}
 			}
-			if val == nil {
-				continue
-			}
-			// 找到后加载到内存
-			table := NewSSTable()
-			if err := table.LoadMetaBlockToMemory(file); err != nil {
-				return val, err
-			}
-			table.level = level
-
-			// LRU管理
-			m.AddTable(table)
-			// 从DiskMap中移除 (写锁)
-			m.removeFromDiskMap(file, level)
-
-			return val, nil
 		}
 	}
+
+	return nil, nil
+}
+
+func (m *Manager) SearchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
+	// 布隆过滤器先粗判
+	if !sst.MayContain(key) {
+		return nil, nil
+	}
+
+	var err error
+	sst.file, err = os.Open(sst.FilePath())
+	if err != nil {
+		log.Errorf("open file %s error: %s", sst.FilePath(), err.Error())
+		return nil, err
+	}
+	it := NewSSTableIterator(sst)
+	it.Seek(key)
+	if it.Valid() && it.Key() == key {
+		val := it.Value()
+		sst.Close()
+
+		// 命中后提升为 LRU 的 MRU（需要写锁）
+		m.mu.Lock()
+		if elem, ok := m.cache[sst.FilePath()]; ok {
+			m.lru.MoveToFront(elem)
+		}
+		m.mu.Unlock()
+
+		return val, nil
+	}
+	sst.Close()
 
 	return nil, nil
 }
@@ -272,9 +262,8 @@ func (m *Manager) removeInMemory(filePath string, level int) {
 		m.lru.Remove(elem)
 		delete(m.cache, filePath)
 
-		// 也可放到 DiskMap 或其他处理
-		m.DiskMap[level] = util.RemoveString(m.DiskMap[level], filePath)
-		log.Debugf("Removed sstable %s from memory", filePath)
+		// 放回 diskMap
+		m.DiskMap[level] = append(m.DiskMap[level], filePath)
 	}
 }
 
@@ -306,6 +295,19 @@ func (m *Manager) isFileInMemory(filePath string) bool {
 
 	_, ok = elem.Value.(*SSTable)
 	return ok
+}
+
+func (m *Manager) isFileInMemoryAndReturn(filePath string) (*SSTable, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	elem, ok := m.cache[filePath]
+	if !ok || elem == nil {
+		return nil, false
+	}
+	sst, ok := elem.Value.(*SSTable)
+
+	return sst, ok
 }
 
 func (m *Manager) findFileToBeMergedByLevel(level int) string {

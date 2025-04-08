@@ -1,5 +1,14 @@
 # 内存驻留组件
 
+## 设计
+
+为了追求读取性能优化，采用在内存中存储一张 Memtable 和十张 Immutable Memtable 操作，方便查询时快速找到 key。
+Immutable Memtable 采用 FIFO 的淘汰机制，被淘汰的 Immutable Memtable 会被持久化到磁盘中，形成一个 SSTable 文件。
+
+为什么不用 LRU 机制管理 Immutable Memtable？
+
+因为 LSM 树在查询同一个 key 时，需要匹配最新的 key，因此需要查询最新的 Immutable Memtable。
+
 ## Memtable
 
 内存驻留组件由**Memtable**和**Immutable Memtable**组成。数据在**Memtable**中通常以有序的**跳表**结构进行存储，以保证磁盘数据的有序行。

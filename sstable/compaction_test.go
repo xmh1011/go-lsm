@@ -12,49 +12,58 @@ import (
 )
 
 func TestSSTableManagerCompaction(t *testing.T) {
-	// 临时目录
+	// 1. 创建临时目录
 	tmp := t.TempDir()
-	// 创建 SSTable 管理器
+	// 2. 创建 SSTable 管理器
 	mgr := NewSSTableManager()
 
-	// 写入 3 个 Level0 文件 (超过 limit)
+	// 对于 Level0，maxFileNumsInLevel(0)=2^(0+2)=4，
+	// 为触发合并，生成 5 个 Level0 文件
 	var oldFiles []string
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
+		// 创建一个内存表并写入单个 key-value
 		mem := memtable.NewMemtable(uint64(i+1), "")
-		_ = mem.Insert(kv.KeyValuePair{Key: kv.Key("key" + strconv.Itoa('a'+i)), Value: []byte("val" + strconv.Itoa('a'+i))})
+		// 构造不同的 key/value，这里用 i 来生成唯一字符串
+		keyStr := "key" + strconv.Itoa(i)
+		valStr := "val" + strconv.Itoa(i)
+		err := mem.Insert(kv.KeyValuePair{Key: kv.Key(keyStr), Value: []byte(valStr)})
+		assert.NoError(t, err)
 		imem := memtable.NewIMemtable(mem)
 		sst := BuildSSTableFromIMemtable(imem)
 		sst.level = 0
+		// 得到文件路径，确保放在临时目录中（例如生成目录 tmp/001/0-level/...）
 		path := sstableFilePath(sst.id, 0, tmp)
-		err := sst.EncodeTo(path)
+		err = sst.EncodeTo(path)
 		assert.NoError(t, err, "sstable should be encoded to file")
 		sst.filePath = path
 		oldFiles = append(oldFiles, path)
+		// 模拟该文件目前在磁盘中
 		mgr.DiskMap[0] = append(mgr.DiskMap[0], path)
 		mgr.TotalMap[0] = append(mgr.TotalMap[0], path)
 	}
 
-	// 触发合并
+	// 3. 触发 Compaction
 	err := mgr.Compaction()
 	assert.NoError(t, err, "compaction should succeed")
 
-	// 确保 Level0 的文件都被删除
+	// 4. 检查 Level0 的老文件是否已从磁盘中删除
 	for _, f := range oldFiles {
 		_, err := os.Stat(f)
 		assert.True(t, os.IsNotExist(err), "old file should be removed after compaction: %s", f)
 	}
 
-	// 确保 Level0 的映射被清空
+	// 5. 检查 Level0 的 DiskMap 与 TotalMap 均已清空
 	assert.Empty(t, mgr.DiskMap[0], "level0 DiskMap should be empty after compaction")
 	assert.Empty(t, mgr.TotalMap[0], "level0 TotalMap should be empty after compaction")
 
-	// Level1 中应有新文件
+	// 6. 检查 Level1 中应有新生成的文件
 	assert.True(t, len(mgr.TotalMap[1]) > 0, "compaction should produce new files in level1")
 
-	// 检查新文件能正确解码
+	// 7. 对 Level1 中的每个新文件尝试解码，并确保包含数据块
 	for _, f := range mgr.TotalMap[1] {
 		sst := NewSSTable()
-		assert.NoError(t, sst.DecodeFrom(f))
+		err := sst.DecodeFrom(f)
+		assert.NoError(t, err)
 		assert.NotEmpty(t, sst.DataBlocks)
 	}
 }

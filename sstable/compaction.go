@@ -22,7 +22,7 @@ import (
 func (m *Manager) Compaction() error {
 	// 若 Level0 超出限制 => 和 Level1 合并
 	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
-		log.Info("level 0 not need to be merged")
+		log.Debug("level 0 not need to be merged")
 		return nil
 	}
 

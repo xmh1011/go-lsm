@@ -27,12 +27,14 @@ func main() {
 
 	db := database.Open("testDB")
 	kvMap := make(map[string][]byte, numPutOperations*numRounds)
+	keys := make([]string, numPutOperations*numRounds)
 
-	for i := 0; i < numRounds; i++ {
+	for t := 0; t < numRounds; t++ {
 		// 写入测试
 		startWrite := time.Now()
 		for i := 0; i < numPutOperations; i++ {
 			key := "k_" + strconv.Itoa(i) + "_" + randomString(randIntInRange(1, 10))
+			keys[t*numPutOperations+i] = key
 			val := []byte("v_" + strconv.Itoa(i) + "_" + randomString(randIntInRange(2, 20)))
 			if err := db.Put(key, val); err != nil {
 				fmt.Printf("Put error: %v\n", err)
@@ -49,7 +51,7 @@ func main() {
 
 		startRead := time.Now()
 		for j := 0; j < numGetOperations; j++ {
-			key, expectVal := pickRandomKey(kvMap)
+			key, expectVal := pickRandomKey(kvMap, keys)
 			if key == "" {
 				continue
 			}
@@ -73,8 +75,6 @@ func main() {
 		totalReadOps += opsPerSecRead
 		totalWriteNsOp += avgLatencyWrite
 		totalReadNsOp += avgLatencyRead
-
-		fmt.Printf("finish round %d:\n", i+1)
 	}
 
 	// 平均输出
@@ -111,17 +111,15 @@ func randomString(n int) string {
 }
 
 // 从 map 随机取一个元素
-func pickRandomKey(kvMap map[string][]byte) (string, []byte) {
+func pickRandomKey(kvMap map[string][]byte, keys []string) (string, []byte) {
 	if len(kvMap) == 0 {
 		return "", nil
 	}
-	idx := rand.IntN(len(kvMap))
-	i := 0
-	for k, v := range kvMap {
-		if i == idx {
-			return k, v
-		}
-		i++
+	idx := rand.IntN(len(keys))
+	key := keys[idx]
+	expectVal, ok := kvMap[key]
+	if !ok {
+		return "", nil
 	}
-	return "", nil
+	return key, expectVal
 }

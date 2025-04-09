@@ -9,6 +9,7 @@
 - [go-lsm](https://github.com/SarthakMakhija/go-lsm)
 - [reading-source-code-of-leveldb-1.23](https://github.com/SmartKeyerror/reading-source-code-of-leveldb-1.23)
 - [leveldb](https://github.com/merlin82/leveldb)
+- [美 彼得罗夫 Petrov, Alex.数据库系统内幕[M].机械工业出版社,2020.]
 
 ## Design
 
@@ -72,13 +73,13 @@ make benchmark
  测试目录   : /Users/xiaominghao/code/go-lsm/data
  循环轮数   : 5
  写入总数   : 5000000
- 写入耗时   : 43.886256991s (平均)
- 写 ops/s  : 25769.64 (平均)
- 写 ns/op  : 43886.26 (平均)
+ 写入耗时   : 41.637037133s (平均)
+ 写 ops/s  : 28058.53 (平均)
+ 写 ns/op  : 41637.04 (平均)
  读取总数   : 5000
- 读取耗时   : 5m28.333446074s (平均)
- 读 ops/s  : 3.20 (平均)
- 读 ns/op  : 328333446.07 (平均)
+ 读取耗时   : 3m5.904097783s (平均)
+ 读 ops/s  : 10.95 (平均)
+ 读 ns/op  : 185904097.78 (平均)
 ==============================================
 ```
 
@@ -213,6 +214,7 @@ make benchmark
 
 - Performance Optimization
 - Tombstone
+- Version Control
 - MVCC
 - Snapshot
 - 2 PL

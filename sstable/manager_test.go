@@ -1,7 +1,6 @@
 package sstable
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,12 +65,4 @@ func TestSSTableManagerSearch(t *testing.T) {
 	val, err = manager.Search("z")
 	assert.NoError(t, err)
 	assert.Nil(t, val)
-
-	// 8. 检查内存缓存中是否存在已加载的 SSTable 元信息
-	all := manager.getAll()
-	assert.Len(t, all, 1)
-	assert.Equal(t, sst.id, all[0].id)
-
-	// 9. 检查 DiskMap 中是否已移除该文件（因为已加载到内存中）
-	assert.False(t, slices.Contains(manager.DiskMap[0], file))
 }

@@ -36,7 +36,6 @@ func main() {
 		kvMap[key] = val
 	}
 	elapsedWrite := time.Since(startWrite)
-	fmt.Println("finish write process")
 
 	opsPerSecWrite := float64(numPutOperations) / elapsedWrite.Seconds()
 	avgLatencyWrite := float64(elapsedWrite.Nanoseconds()) / float64(numPutOperations)

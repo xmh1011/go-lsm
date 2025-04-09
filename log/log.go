@@ -97,7 +97,7 @@ func InitLogger(configPath string) error {
 func InitDefaultLogger() {
 	logger = logrus.New()
 	// 设置日志级别
-	logger.SetLevel(logrus.DebugLevel)
+	logger.SetLevel(logrus.InfoLevel)
 
 	// 设置日志格式
 	logger.SetFormatter(&logrus.TextFormatter{

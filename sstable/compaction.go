@@ -19,24 +19,24 @@ import (
 // Compaction 合并文件层数
 // 若 Level0 文件数超限 -> 将所有 Level0 + 与其区间有交集的 Level1 一并合并 => 放到 Level1
 // 若 Level1 超限 => 同样向下合并
+// 为了优化性能，第 0 层合并为同步，后续合并为异步
+// Compaction 执行 Level0 的同步合并，并触发 Level1 及以上的异步合并
 func (m *Manager) Compaction() error {
-	// 若 Level0 超出限制 => 和 Level1 合并
+	// 如果 Level0 文件数未超过限制，直接返回
 	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
 		log.Debug("level 0 not need to be merged")
 		return nil
 	}
 
-	// 1. 收集所有 Level0 文件
+	// 同步合并 Level0 层
 	level0Files := m.getFilesByLevel(minSSTableLevel)
 	if len(level0Files) == 0 {
 		log.Debug("level 0 files not exist")
 		return nil
 	}
 
-	// decode all L0 blocks
 	var allBlocks []*block.DataBlock
 	var oldLevel0Files []string
-
 	for _, path := range level0Files {
 		sst := NewSSTable()
 		if err := sst.DecodeFrom(path); err != nil {
@@ -70,11 +70,40 @@ func (m *Manager) Compaction() error {
 		return err
 	}
 
-	// 5. 若 Level1 再超限 => 向下递归合并
-	if m.isLevelNeedToBeMerged(1) {
-		return m.compactLevel(1)
+	// 5. 触发异步合并 Level1 及以上（如果 Level1 超限）
+	if m.isLevelNeedToBeMerged(minSSTableLevel + 1) {
+		go m.asyncCompactLevel(minSSTableLevel + 1)
 	}
+
 	return nil
+}
+
+// asyncCompactLevel 异步合并指定层（Level1 及以上）
+func (m *Manager) asyncCompactLevel(level int) {
+	m.mu.Lock()
+	// 防止重复合并：若已有异步合并正在进行则直接返回
+	if m.compacting {
+		m.mu.Unlock()
+		return
+	}
+	m.compacting = true
+	m.compactingLevel = level
+	m.mu.Unlock()
+
+	// 异步循环：合并直到当前层不再超限
+	for m.isLevelNeedToBeMerged(level) {
+		if err := m.compactLevel(level); err != nil {
+			log.Errorf("async compaction at level %d error: %s", level, err.Error())
+			break
+		}
+	}
+
+	// 合并结束，清除标记并通知等待者
+	m.mu.Lock()
+	m.compacting = false
+	m.compactingLevel = -1
+	m.compactionCond.Broadcast()
+	m.mu.Unlock()
 }
 
 // compactLevel 实现 1 -> 2, 2->3... 等递归合并

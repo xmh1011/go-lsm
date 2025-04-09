@@ -27,6 +27,11 @@ type Manager struct {
 	DiskMap map[int][]string
 	// TotalMap: 全部文件记录 (内存 + 磁盘)
 	TotalMap map[int][]string
+
+	// 用于异步等待 level 1 以上的文件合并
+	compactionCond  *sync.Cond // 条件变量，用于等待异步合并完成
+	compacting      bool       // 标识是否正在执行异步合并
+	compactingLevel int        // 正在合并的 level, -1 表示没有合并
 }
 
 const (
@@ -51,13 +56,17 @@ func init() {
 	}
 }
 
+// NewSSTableManager 构造 Manager，同时初始化异步合并的条件变量
 func NewSSTableManager() *Manager {
-	return &Manager{
-		lru:      list.New(),
-		cache:    make(map[string]*list.Element),
-		DiskMap:  make(map[int][]string),
-		TotalMap: make(map[int][]string),
+	mgr := &Manager{
+		lru:             list.New(),
+		cache:           make(map[string]*list.Element),
+		DiskMap:         make(map[int][]string),
+		TotalMap:        make(map[int][]string),
+		compactingLevel: -1,
 	}
+	mgr.compactionCond = sync.NewCond(&mgr.mu)
+	return mgr
 }
 
 func (m *Manager) CreateNewSSTable(imem *memtable.IMemtable) error {
@@ -118,42 +127,49 @@ func (m *Manager) AddTable(table *SSTable) {
 	}
 }
 
-// Search 会先在内存(LRU)中查找，不命中再去 DiskMap
+// Search 会依次从 Level0 到 Level6 查找 key。
+// 对 Level1 及以上的层，如果该层正在进行异步合并，则等待合并结束再查询。
 func (m *Manager) Search(key kv.Key) ([]byte, error) {
-	// 先从最低的 level 开始查找
-	for i := minSSTableLevel; i <= maxSSTableLevel; i++ {
-		files := m.getSortedFilesByLevel(i)
+	// 从 Level0 到 Level6 依次查找
+	for level := minSSTableLevel; level <= maxSSTableLevel; level++ {
+		// 对 Level1 及以上，如果该层正在合并，则等待合并完成
+		if level >= 1 {
+			m.mu.Lock()
+			for m.compacting && m.compactingLevel == level {
+				m.compactionCond.Wait()
+			}
+			m.mu.Unlock()
+		}
+
+		files := m.getSortedFilesByLevel(level)
 		n := len(files)
-		for j := 0; j < len(files); j++ {
-			sst, ok := m.isFileInMemoryAndReturn(files[n-1-j])
-			if ok { // 如果在内存中
-				val, err := m.SearchFromTable(sst, key)
-				if err != nil {
-					log.Errorf("search from table error: %s", err.Error())
-					return nil, err
-				}
-				if val != nil {
-					return val, nil
-				}
-			} else { // 如果不在内存中
-				sst := NewSSTable()
-				err := sst.LoadMetaBlockToMemory(files[n-1-j])
-				if err != nil {
+		for j := 0; j < n; j++ {
+			filePath := files[n-1-j]
+			var sst *SSTable
+			if inMem, ok := m.isFileInMemoryAndReturn(filePath); ok {
+				sst = inMem
+			} else {
+				sst = NewSSTable()
+				// 加载元数据（仅 meta 部分，不加载 data block）
+				if err := sst.LoadMetaBlockToMemory(filePath); err != nil {
 					log.Errorf("decode metadata error: %s", err.Error())
 					return nil, err
 				}
-				val, err := m.SearchFromTable(sst, key)
-				if err != nil {
-					log.Errorf("search from table error: %s", err.Error())
-					return nil, err
-				}
-				if val != nil {
-					// 命中后添加到 LRU
+			}
+
+			val, err := m.SearchFromTable(sst, key)
+			if err != nil {
+				log.Errorf("search from table error: %s", err.Error())
+				return nil, err
+			}
+			if val != nil {
+				// 命中后如该 SSTable之前不在内存中，则添加到内存缓存，并从 DiskMap 中移除
+				if !m.isFileInMemory(sst.FilePath()) {
 					m.AddTable(sst)
 					// 在 diskMap 中删除
 					m.removeFromDiskMap(sst.FilePath(), sst.level)
-					return val, nil
 				}
+				return val, nil
 			}
 		}
 	}

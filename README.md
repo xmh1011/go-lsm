@@ -56,11 +56,11 @@ goos: darwin
 goarch: arm64
 pkg: github.com/xmh1011/go-lsm/database
 cpu: Apple M1 Pro
-BenchmarkPut-8          2636866             36804 ns/op
-BenchmarkGet-8          141383065           244.8 ns/op
-BenchmarkDelete-8       1000000             35407 ns/op
+BenchmarkPut-8           2705047             27965 ns/op
+BenchmarkGet-8           141958136           248.0 ns/op
+BenchmarkDelete-8        1000000             33963 ns/op
 PASS
-ok      github.com/xmh1011/go-lsm/database      217.214s
+ok      github.com/xmh1011/go-lsm/database      196.498s
 ```
 
 ```bash
@@ -71,13 +71,13 @@ make benchmark
 ==============================================
  测试目录   : /Users/xiaominghao/code/go-lsm/data
  写入数量   : 2000000
- 写入耗时   : 1m3.580591625s
- 写 ops/s  : 31456.14
- 写 ns/op  : 31790.30
+ 写入耗时   : 56.3379755s
+ 写 ops/s  : 35500.03
+ 写 ns/op  : 28168.99
  读取数量   : 1000
- 读取耗时   : 6m32.999611375s
- 读 ops/s  : 2.54
- 读 ns/op  : 392999611.38
+ 读取耗时   : 6m28.036797333s
+ 读 ops/s  : 2.58
+ 读 ns/op  : 388036797.33
 ==============================================
 ```
 

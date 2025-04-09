@@ -5,11 +5,10 @@
 ## References
 
 - [mini-lsm](https://skyzh.github.io/mini-lsm/)
-- [whuanle/lsm](https://www.cnblogs.com/whuanle/p/16297025.html)
 - [go-lsm](https://github.com/SarthakMakhija/go-lsm)
 - [reading-source-code-of-leveldb-1.23](https://github.com/SmartKeyerror/reading-source-code-of-leveldb-1.23)
 - [leveldb](https://github.com/merlin82/leveldb)
-- [美 彼得罗夫 Petrov, Alex.数据库系统内幕[M].机械工业出版社,2020.]
+- 美 彼得罗夫 Petrov, Alex.数据库系统内幕[M].机械工业出版社,2020.
 
 ## Design
 

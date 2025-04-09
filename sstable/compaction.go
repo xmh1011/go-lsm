@@ -16,27 +16,27 @@ import (
 	"github.com/xmh1011/go-lsm/util"
 )
 
-// Compaction 合并文件层数
-// 若 Level0 文件数超限 -> 将所有 Level0 + 与其区间有交集的 Level1 一并合并 => 放到 Level1
-// 若 Level1 超限 => 同样向下合并
+// Compaction 执行 Level0 的同步合并，并触发 Level1 及以上的异步合并。
+// 合并流程：
+// 1. 收集 Level0 文件，解码其 DataBlocks，并统计全局 key 区间。
+// 2. 从 Level1 中找出与该区间交集的文件，将其 DataBlocks 一并取出。
+// 3. 使用归并排序将所有块合并分块，产出新 SSTable（写入 Level1）。
+// 4. 删除旧 Level0 和 Level1 文件，并加入新文件记录。
+// 5. 如果 Level1 超限，异步触发后续合并。
 func (m *Manager) Compaction() error {
-	// 若 Level0 超出限制 => 和 Level1 合并
 	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
 		log.Debug("level 0 not need to be merged")
 		return nil
 	}
 
-	// 1. 收集所有 Level0 文件
 	level0Files := m.getFilesByLevel(minSSTableLevel)
 	if len(level0Files) == 0 {
 		log.Debug("level 0 files not exist")
 		return nil
 	}
 
-	// decode all L0 blocks
 	var allBlocks []*block.DataBlock
 	var oldLevel0Files []string
-
 	for _, path := range level0Files {
 		sst := NewSSTable()
 		if err := sst.DecodeFrom(path); err != nil {
@@ -47,19 +47,16 @@ func (m *Manager) Compaction() error {
 		oldLevel0Files = append(oldLevel0Files, path)
 	}
 
-	// 2. 找到与 Level0 区间有交集的 Level1 文件
-	minK, maxK := getGlobalKeyRange(allBlocks)                                             // 获取 Level0 的最小、最大 key
-	newBlocks, oldLevel1Files, err := m.mergeNextLevelFiles(minSSTableLevel+1, minK, maxK) // 找到 Level1 中与其有交集的文件
+	minK, maxK := getGlobalKeyRange(allBlocks)
+	newBlocks, oldLevel1Files, err := m.mergeNextLevelFiles(minSSTableLevel+1, minK, maxK)
 	if err != nil {
 		log.Errorf("merge next level files error: %s", err.Error())
 		return err
 	}
 	allBlocks = append(allBlocks, newBlocks...) // 将 Level1 的 blocks 加入到 allBlocks 中
 
-	// 3. 合并+分块 => 产出 newTables
 	newTables := CompactAndMergeBlocks(allBlocks, 1)
 
-	// 4. 删除旧文件( level0 + level1 ), 加入新文件
 	if err := m.removeOldSSTables(oldLevel0Files, 0); err != nil {
 		return err
 	}
@@ -70,21 +67,43 @@ func (m *Manager) Compaction() error {
 		return err
 	}
 
-	// 5. 若 Level1 再超限 => 向下递归合并
-	if m.isLevelNeedToBeMerged(1) {
-		return m.compactLevel(1)
+	if m.isLevelNeedToBeMerged(minSSTableLevel + 1) {
+		go m.asyncCompactLevel(minSSTableLevel + 1)
 	}
+
 	return nil
 }
 
-// compactLevel 实现 1 -> 2, 2->3... 等递归合并
-func (m *Manager) compactLevel(level int) error {
-	if level >= maxSSTableLevel {
-		// 若最后一层还超限，可新建一层
-		return m.newLevelCompaction(level)
+// asyncCompactLevel 异步合并指定层（Level1 及以上），使用条件变量等待合并完成。
+func (m *Manager) asyncCompactLevel(level int) {
+	m.mu.Lock()
+	if m.compacting {
+		m.mu.Unlock()
+		return
+	}
+	m.compacting = true
+	m.compactingLevel = level
+	m.mu.Unlock()
+
+	for m.isLevelNeedToBeMerged(level) {
+		if err := m.compactLevel(level); err != nil {
+			log.Errorf("async compaction at level %d error: %s", level, err.Error())
+			break
+		}
 	}
 
-	// 若没超限, 不需要合并
+	m.mu.Lock()
+	m.compacting = false
+	m.compactingLevel = -1
+	m.compactionCond.Broadcast()
+	m.mu.Unlock()
+}
+
+// compactLevel 同步合并指定层（Level1 及以上）。
+func (m *Manager) compactLevel(level int) error {
+	if level >= maxSSTableLevel {
+		return m.newLevelCompaction(level)
+	}
 	if !m.isLevelNeedToBeMerged(level) {
 		return nil
 	}
@@ -177,7 +196,8 @@ func (m *Manager) mergeNextLevelFiles(level int, minK, maxK kv.Key) ([]*block.Da
 		// 首先判断在内存中有没有
 		var sst *SSTable
 		if m.isFileInMemory(path) {
-			sst = m.cache[path].Value.(*SSTable)
+			// 从内存中取
+			sst, _ = m.isFileInMemoryAndReturn(path)
 		} else {
 			sst = NewSSTable()
 			// 仅加载 meta
@@ -242,12 +262,13 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 	defer m.mu.Unlock()
 
 	for _, oldPath := range oldFiles {
-		// 从 LRU cache 中删除
-		if elem, ok := m.cache[oldPath]; ok {
-			m.lru.Remove(elem)
-			delete(m.cache, oldPath)
+		// 从 metas 中删除对应的 SSTable
+		for i, sst := range m.metas {
+			if sst.FilePath() == oldPath {
+				m.metas = append(m.metas[:i], m.metas[i+1:]...)
+				break
+			}
 		}
-		// 从 DiskMap / TotalMap 中删除
 		m.DiskMap[level] = util.RemoveString(m.DiskMap[level], oldPath)
 		m.TotalMap[level] = util.RemoveString(m.TotalMap[level], oldPath)
 		// 物理删除文件
@@ -262,21 +283,16 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 
 // addNewSSTables 用于将新表加入内存和对应 level
 func (m *Manager) addNewSSTables(newTables []*SSTable, level int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	for _, nt := range newTables {
 		// 写入磁盘
 		if err := nt.EncodeTo(nt.FilePath()); err != nil {
 			log.Errorf("encode sstable to file %s error: %s", nt.FilePath(), err.Error())
 			return err
 		}
-		// 将 Data Block 置空，节约内存空间，插入到 LRU
 		nt.DataBlocks = nil
-		e := m.lru.PushFront(nt)
-		m.cache[nt.FilePath()] = e
-		// 更新 TotalMap，因为已经加载到内存中了，所以不在 DiskMap 中写入记录
-		m.TotalMap[level] = append(m.TotalMap[level], nt.FilePath())
+		// 使用 addTable 插入到内存中，保持 metas 排序与大小限制
+		m.addTable(nt)
+		m.addNewFile(level, nt.FilePath())
 	}
 
 	return nil

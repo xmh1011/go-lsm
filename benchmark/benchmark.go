@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strconv"
 	"time"
 
@@ -12,82 +12,100 @@ import (
 )
 
 const (
-	numPutOperations = 2000000
+	numPutOperations = 1000000
 	numGetOperations = 1000
+	numRounds        = 5
 )
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	var totalWriteTime time.Duration
+	var totalReadTime time.Duration
+	var totalWriteOps float64
+	var totalReadOps float64
+	var totalWriteNsOp float64
+	var totalReadNsOp float64
 
-	db := database.Open("testdb")
+	db := database.Open("testDB")
+	kvMap := make(map[string][]byte, numPutOperations*numRounds)
 
-	// 1) 写 (Put) 性能测试
-	kvMap := make(map[string][]byte, numPutOperations)
-
-	startWrite := time.Now()
-	for i := 0; i < numPutOperations; i++ {
-		key := "k_" + strconv.Itoa(i) + "_" + randomString(4)
-		val := []byte("v_" + strconv.Itoa(i) + "_" + randomString(8))
-
-		if err := db.Put(key, val); err != nil {
-			fmt.Printf("Put error: %v\n", err)
-			return
+	for i := 0; i < numRounds; i++ {
+		// 写入测试
+		startWrite := time.Now()
+		for i := 0; i < numPutOperations; i++ {
+			key := "k_" + strconv.Itoa(i) + "_" + randomString(randIntInRange(1, 10))
+			val := []byte("v_" + strconv.Itoa(i) + "_" + randomString(randIntInRange(2, 20)))
+			if err := db.Put(key, val); err != nil {
+				fmt.Printf("Put error: %v\n", err)
+				return
+			}
+			kvMap[key] = val
 		}
-		kvMap[key] = val
+		elapsedWrite := time.Since(startWrite)
+		opsPerSecWrite := float64(numPutOperations) / elapsedWrite.Seconds()
+		avgLatencyWrite := float64(elapsedWrite.Nanoseconds()) / float64(numPutOperations)
+
+		// 读取测试
+		time.Sleep(200 * time.Millisecond)
+
+		startRead := time.Now()
+		for j := 0; j < numGetOperations; j++ {
+			key, expectVal := pickRandomKey(kvMap)
+			if key == "" {
+				continue
+			}
+			gotVal, err := db.Get(key)
+			if err != nil {
+				fmt.Printf("Get error: %v\n", err)
+				return
+			}
+			if !bytes.Equal(gotVal, expectVal) {
+				fmt.Printf("value mismatch! key=%s, expect=%v, got=%v\n", key, expectVal, gotVal)
+			}
+		}
+		elapsedRead := time.Since(startRead)
+		opsPerSecRead := float64(numGetOperations) / elapsedRead.Seconds()
+		avgLatencyRead := float64(elapsedRead.Nanoseconds()) / float64(numGetOperations)
+
+		// 累加
+		totalWriteTime += elapsedWrite
+		totalReadTime += elapsedRead
+		totalWriteOps += opsPerSecWrite
+		totalReadOps += opsPerSecRead
+		totalWriteNsOp += avgLatencyWrite
+		totalReadNsOp += avgLatencyRead
+
+		fmt.Printf("finish round %d:\n", i+1)
 	}
-	elapsedWrite := time.Since(startWrite)
-	fmt.Println("finish write process")
 
-	opsPerSecWrite := float64(numPutOperations) / elapsedWrite.Seconds()
-	avgLatencyWrite := float64(elapsedWrite.Nanoseconds()) / float64(numPutOperations)
-
-	// 2) 读 (Get) 性能测试
-	// 等待一小段时间，让后台异步创建 SSTable 的 goroutine 完成
-	time.Sleep(200 * time.Millisecond)
-
-	startRead := time.Now()
-	for j := 0; j < numGetOperations; j++ {
-		key, expectVal := pickRandomKey(kvMap)
-		if key == "" {
-			continue
-		}
-		gotVal, err := db.Get(key)
-		if err != nil {
-			fmt.Printf("Get error: %v\n", err)
-			return
-		}
-		// 校验是否是最新值
-		if !bytes.Equal(gotVal, expectVal) {
-			fmt.Printf("value mismatch! key=%s, expect=%v, got=%v\n", key, expectVal, gotVal)
-		}
-	}
-	elapsedRead := time.Since(startRead)
-
-	opsPerSecRead := float64(numGetOperations) / elapsedRead.Seconds()
-	avgLatencyRead := float64(elapsedRead.Nanoseconds()) / float64(numGetOperations)
-
+	// 平均输出
 	fmt.Println("==============================================")
 	fmt.Printf(" 测试目录   : %s\n", config.GetRootPath())
-	fmt.Printf(" 写入数量   : %d\n", numPutOperations)
-	fmt.Printf(" 写入耗时   : %s\n", elapsedWrite)
-	fmt.Printf(" 写 ops/s   : %.2f\n", opsPerSecWrite)
-	fmt.Printf(" 写 ns/op   : %.2f\n", avgLatencyWrite)
-
-	fmt.Printf(" 读取数量   : %d\n", numGetOperations)
-	fmt.Printf(" 读取耗时   : %s\n", elapsedRead)
-	fmt.Printf(" 读 ops/s   : %.2f\n", opsPerSecRead)
-	fmt.Printf(" 读 ns/op   : %.2f\n", avgLatencyRead)
+	fmt.Printf(" 循环轮数   : %d\n", numRounds)
+	fmt.Printf(" 写入总数   : %d\n", numPutOperations*numRounds)
+	fmt.Printf(" 写入耗时   : %s (平均)\n", totalWriteTime/time.Duration(numRounds))
+	fmt.Printf(" 写 ops/s  : %.2f (平均)\n", totalWriteOps/float64(numRounds))
+	fmt.Printf(" 写 ns/op  : %.2f (平均)\n", totalWriteNsOp/float64(numRounds))
+	fmt.Printf(" 读取总数   : %d\n", numGetOperations*numRounds)
+	fmt.Printf(" 读取耗时   : %s (平均)\n", totalReadTime/time.Duration(numRounds))
+	fmt.Printf(" 读 ops/s  : %.2f (平均)\n", totalReadOps/float64(numRounds))
+	fmt.Printf(" 读 ns/op  : %.2f (平均)\n", totalReadNsOp/float64(numRounds))
 	fmt.Println("==============================================")
-
-	time.Sleep(5 * time.Second)
 }
 
-// 生成随机字符串作为 key 或 value
+// 返回 [x, y] 范围的随机整数
+func randIntInRange(x, y int) int {
+	if y < x {
+		x, y = y, x
+	}
+	return x + rand.IntN(y-x+1)
+}
+
+// 随机字符串
 func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+		b[i] = letters[rand.IntN(len(letters))]
 	}
 	return string(b)
 }
@@ -97,8 +115,7 @@ func pickRandomKey(kvMap map[string][]byte) (string, []byte) {
 	if len(kvMap) == 0 {
 		return "", nil
 	}
-	// 随机偏移
-	idx := rand.Intn(len(kvMap))
+	idx := rand.IntN(len(kvMap))
 	i := 0
 	for k, v := range kvMap {
 		if i == idx {

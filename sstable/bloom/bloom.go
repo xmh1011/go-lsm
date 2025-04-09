@@ -76,8 +76,8 @@ import (
 )
 
 const (
-	defaultBloomFilterM = 400000
-	defaultBloomFilterK = 10
+	defaultBloomFilterM = 1600000
+	defaultBloomFilterK = 16
 )
 
 // A Filter is a representation of a set of _n_ items, where the main

@@ -38,8 +38,8 @@ func TestSSTableManagerCompaction(t *testing.T) {
 		sst.filePath = path
 		oldFiles = append(oldFiles, path)
 		// 模拟该文件目前在磁盘中
-		mgr.DiskMap[0] = append(mgr.DiskMap[0], path)
-		mgr.TotalMap[0] = append(mgr.TotalMap[0], path)
+		mgr.addTable(sst)
+		mgr.addNewFile(0, sst.FilePath())
 	}
 
 	// 3. 触发 Compaction

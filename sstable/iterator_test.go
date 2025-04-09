@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -57,6 +58,9 @@ func TestSSTableIteratorTraversalAndSeek(t *testing.T) {
 	err = loaded.DecodeFrom(filePath)
 	assert.NoError(t, err)
 
+	original.file, err = os.Open(filePath)
+	assert.NoError(t, err)
+
 	// 1. 顺序遍历 SSTable 中所有记录
 	iter := NewSSTableIterator(original)
 	var keys []string
@@ -70,6 +74,8 @@ func TestSSTableIteratorTraversalAndSeek(t *testing.T) {
 
 	// 2. 测试 Seek 定位
 	// (a) Seek 到 "b"，预期定位到 "b"
+	loaded.file, err = os.Open(filePath)
+	assert.NoError(t, err)
 	iter = NewSSTableIterator(loaded)
 	iter.Seek("b")
 	assert.True(t, iter.Valid())

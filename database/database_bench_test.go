@@ -4,8 +4,6 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	"github.com/xmh1011/go-lsm/kv"
 )
 
 // BenchmarkPut 测试 Put 操作的吞吐量和平均时延
@@ -86,7 +84,7 @@ func BenchmarkDelete(b *testing.B) {
 		// 循环中删除一个存在的 key，然后重新插入保证下次删除时是最新数据
 		idx := i % keyCount
 		key := "key_" + strconv.Itoa(idx)
-		if err := db.Delete(kv.Key(key)); err != nil {
+		if err := db.Delete(key); err != nil {
 			b.Fatalf("Delete error: %v", err)
 		}
 		// 重新插入 key ，新 value 保证最新性

@@ -49,8 +49,8 @@ func (d *Database) Put(key string, value []byte) error {
 	return nil
 }
 
-func (d *Database) Delete(key kv.Key) error {
-	imem, err := d.MemTables.Delete(key)
+func (d *Database) Delete(key string) error {
+	imem, err := d.MemTables.Delete(kv.Key(key))
 	if err != nil {
 		return err
 	}

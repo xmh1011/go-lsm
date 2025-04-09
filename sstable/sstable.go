@@ -10,7 +10,6 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/sstable/block"
-	"github.com/xmh1011/go-lsm/util"
 )
 
 const (
@@ -62,6 +61,15 @@ func NewSSTable() *SSTable {
 	}
 }
 
+func NewRecoverSSTable(level int) *SSTable {
+	return &SSTable{
+		level:       level,
+		DataBlocks:  make([]*block.DataBlock, 0),
+		IndexBlock:  block.NewIndexBlock(),
+		FilterBlock: block.NewFilterBlock(0, 0),
+	}
+}
+
 func NewSSTableWithLevel(level int) *SSTable {
 	table := NewSSTable()
 	table.level = level
@@ -69,38 +77,12 @@ func NewSSTableWithLevel(level int) *SSTable {
 	return table
 }
 
-// LoadMetaBlockToMemory 将 sstable 元信息加载到内存中
-// 为什么不直接用 DecodeMetaData？
-// 需要考虑关闭文件句柄的问题
-// 加载到内存中，需要的时候重新打开文件句柄
-func (t *SSTable) LoadMetaBlockToMemory(filePath string) error {
+func (t *SSTable) DecodeMetaData(filePath string) error {
 	var err error
 	t.file, err = os.Open(filePath)
 	if err != nil {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
-	}
-	defer t.Close()
-
-	if err = t.DecodeMetaData(filePath); err != nil {
-		log.Errorf("decode metadata error: %s", err.Error())
-		return err
-	}
-
-	return nil
-}
-
-func (t *SSTable) DecodeMetaData(filePath string) error {
-	var err error
-	t.id, err = util.ExtractIDFromFileName(filepath.Base(filePath))
-	if err != nil {
-		log.Errorf("extract id from file path %s error: %s", filePath, err.Error())
-		return fmt.Errorf("extract id from file path error: %w", err)
-	}
-	t.level, err = util.ExtractLevelFromFilePath(filePath)
-	if err != nil {
-		log.Errorf("extract level from file path %s error: %s", filePath, err.Error())
-		return fmt.Errorf("extract level from file path error: %w", err)
 	}
 	t.filePath = filePath
 
@@ -123,23 +105,6 @@ func (t *SSTable) DecodeMetaData(filePath string) error {
 	if err != nil {
 		log.Errorf("decode meta index block error: %s", err.Error())
 		return fmt.Errorf("decode meta index block error: %w", err)
-	}
-
-	return nil
-}
-
-func (t *SSTable) LoadDataBlocksToMemory() error {
-	var err error
-	t.file, err = os.Open(t.filePath)
-	if err != nil {
-		log.Errorf("open file %s error: %s", t.filePath, err.Error())
-		return fmt.Errorf("open file error: %w", err)
-	}
-	defer t.Close()
-
-	if err = t.DecodeDataBlocks(); err != nil {
-		log.Errorf("decode data blocks error: %s", err.Error())
-		return err
 	}
 
 	return nil
@@ -169,6 +134,7 @@ func (t *SSTable) DecodeFrom(filePath string) error {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
+	defer t.Close()
 
 	if err = t.DecodeMetaData(filePath); err != nil {
 		log.Errorf("decode metadata error: %s", err.Error())

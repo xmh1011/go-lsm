@@ -74,14 +74,14 @@ func (f *Footer) DecodeFrom(file *os.File) error {
 
 	// 解析 MetaIndexHandle
 	if err := f.MetaIndexHandle.DecodeFrom(reader); err != nil {
-		log.Errorf("decode meta index handle error: %s", err.Error())
-		return fmt.Errorf("decode meta index handle: %w", err)
+		log.Errorf("decode meta Index handle error: %s", err.Error())
+		return fmt.Errorf("decode meta Index handle: %w", err)
 	}
 
 	// 解析 IndexHandle（剩余部分）
 	if err := f.IndexHandle.DecodeFrom(reader); err != nil {
-		log.Errorf("decode index handle error: %s", err.Error())
-		return fmt.Errorf("decode index handle: %w", err)
+		log.Errorf("decode Index handle error: %s", err.Error())
+		return fmt.Errorf("decode Index handle: %w", err)
 	}
 
 	return nil
@@ -95,14 +95,14 @@ func (f *Footer) EncodeTo(w io.Writer) error {
 
 	// 编码 MetaIndexHandle
 	if err := f.MetaIndexHandle.EncodeTo(&handleBuf); err != nil {
-		log.Errorf("encode meta index handle failed: %s", err.Error())
-		return fmt.Errorf("encode meta index handle failed: %w", err)
+		log.Errorf("encode meta Index handle failed: %s", err.Error())
+		return fmt.Errorf("encode meta Index handle failed: %w", err)
 	}
 
 	// 编码 IndexHandle
 	if err := f.IndexHandle.EncodeTo(&handleBuf); err != nil {
-		log.Errorf("encode index handle failed: %s", err.Error())
-		return fmt.Errorf("encode index handle failed: %w", err)
+		log.Errorf("encode Index handle failed: %s", err.Error())
+		return fmt.Errorf("encode Index handle failed: %w", err)
 	}
 
 	// 判断编码后的总长度

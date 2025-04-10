@@ -33,16 +33,24 @@ func BuildSSTableFromIMemtable(imem *memtable.IMemtable) *SSTable {
 
 // Add 向当前 DataBlock 添加记录；若当前 Block 满了，则 flush。
 func (b *Builder) Add(pair *kv.KeyValuePair) {
-	// 如果当前 DataBlock 不存在或已满，新建一个
 	var current *block.DataBlock
-	if len(b.table.DataBlocks) == 0 || !b.table.DataBlocks[len(b.table.DataBlocks)-1].CanInsert(pair) {
+
+	// 如果没有 Block，或者最后一个 Block 满了，则新建
+	if len(b.table.DataBlocks) == 0 {
 		current = block.NewDataBlock()
 		b.table.DataBlocks = append(b.table.DataBlocks, current)
 	} else {
-		current = b.table.DataBlocks[len(b.table.DataBlocks)-1]
+		last := b.table.DataBlocks[len(b.table.DataBlocks)-1]
+		if last.CanInsert(pair) {
+			current = last
+		} else {
+			current = block.NewDataBlock()
+			b.table.DataBlocks = append(b.table.DataBlocks, current)
+		}
 	}
 
-	current.Records = append(current.Records, pair)
+	// 添加记录
+	current.AddRecord(pair)
 	b.table.FilterBlock.Add(pair.Key)
 	b.size += pair.EstimateSize()
 }

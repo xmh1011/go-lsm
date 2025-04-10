@@ -19,6 +19,7 @@ package block
 import (
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
@@ -53,8 +54,8 @@ func NewIndexEntry() *IndexEntry {
 // DecodeFrom 从给定文件句柄中读取 IndexBlock
 func (i *IndexBlock) DecodeFrom(r io.ReadSeeker, handle Handle) error {
 	if _, err := r.Seek(int64(handle.Offset), io.SeekStart); err != nil {
-		log.Errorf("seek to index block failed: %s", err.Error())
-		return fmt.Errorf("seek to index block failed: %w", err)
+		log.Errorf("seek to Index block failed: %s", err.Error())
+		return fmt.Errorf("seek to Index block failed: %w", err)
 	}
 	// 首先读取 startKey 并判断读取的字节数
 	if err := i.StartKey.DecodeFrom(r); err != nil {
@@ -137,4 +138,76 @@ func (i *IndexBlock) EncodeTo(w io.WriteSeeker) (Handle, error) {
 	handle.Size = uint64(endOffset - startOffset)
 
 	return handle, nil
+}
+
+type Position struct {
+	Level    int
+	FileName string
+	Index    *IndexEntry
+}
+
+type SparseIndex struct {
+	Positions []*Position
+}
+
+func NewPosition(level int, fileName string, index *IndexEntry) *Position {
+	return &Position{
+		Level:    level,
+		FileName: fileName,
+		Index:    index,
+	}
+}
+
+func NewSparseIndex() *SparseIndex {
+	return &SparseIndex{
+		Positions: make([]*Position, 0),
+	}
+}
+
+func (s *SparseIndex) FindPositionByKey(key kv.Key) *Position {
+	if len(s.Positions) == 0 {
+		return nil
+	}
+
+	left, right := 0, len(s.Positions)-1
+	var result *Position
+
+	for left <= right {
+		mid := (left + right) / 2
+		if s.Positions[mid].Index.SeparatorKey >= key {
+			// 可能是目标，继续向左找更小的
+			result = s.Positions[mid]
+			right = mid - 1
+		} else {
+			left = mid + 1
+		}
+	}
+
+	return result
+}
+
+// AddFromIndexBlock 将新的 indexBlock 加入稀疏索引
+// 只加入，不排序，等最后插入完毕再排序，这样性能最优。
+func (s *SparseIndex) AddFromIndexBlock(level int, fileName string, indexBlock *IndexBlock) {
+	for _, entry := range indexBlock.Indexes {
+		pos := NewPosition(level, fileName, entry)
+		s.Positions = append(s.Positions, pos)
+	}
+}
+
+// RemoveByFileName 从稀疏索引中移除指定文件的所有 Position
+func (s *SparseIndex) RemoveByFileName(fileName string) {
+	newPositions := s.Positions[:0]
+	for _, pos := range s.Positions {
+		if pos.FileName != fileName {
+			newPositions = append(newPositions, pos)
+		}
+	}
+	s.Positions = newPositions
+}
+
+func (s *SparseIndex) Sort() {
+	sort.Slice(s.Positions, func(a, b int) bool {
+		return s.Positions[a].Index.SeparatorKey < s.Positions[b].Index.SeparatorKey
+	})
 }

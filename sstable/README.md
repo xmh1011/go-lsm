@@ -7,6 +7,48 @@
 
 查找时，从低层级到高层级，按照文件的 id，也就是时间戳，来查找。先查层级低的，最新的文件。
 
+由 LSM 树的写入和压缩策略可知，L0 的 SSTable 之间，每个 SSTable 的 key 的区间是有重叠的，而由于合并策略，L1 及以上的 SSTable，在每一层内， key 的区间都是不重叠的。
+
+所以可以根据这一特性，进行查询性能的优化。可以对 L1 及以上的层级用二分查找结合布隆过滤器，同时查找。
+
+```text
+       +--------------+
+       |   MemTable   |   ← 内存，优先查找
+       +--------------+
+              ↓
+   +-------------------+
+   | ImmutableMemTable | ← 内存只读表
+   +-------------------+
+              ↓
+       +--------------+
+       |  L0 SSTables  | ← 多个文件，可能有重叠，逐个查找
+       +--------------+
+              ↓
+   +------------------------+
+   |  L1 ~ Ln SSTables      | ← 无重叠，可二分查找，逐层查询
+   +------------------------+
+```
+
+```text
+Search(key)
+   ↓
+for each level (0→6)
+   ↓
+for each file (newest→oldest)
+   ↓
+Load SST meta (if not in memory)
+   ↓
+Bloom Filter: MayContain(key)?
+   ↓         ↓
+false      true
+ ↓           ↓
+skip     IndexBlock → Locate block
+           ↓
+         Seek in block
+           ↓
+       Found? → Return
+```
+
 ## SSTable
 
 在LSM树中，数据以有序字符串表（Sorted String Table，SSTable）的形式存储在磁盘上。
@@ -175,7 +217,7 @@ Minor Compaction 的入口点为 `CreateNewSSTable` 方法。
 
 若Level0层中的文件数量超出限制，则开始进行合并操作。对于Level0层的合并操作来说， 需要将所有的Level0层中的 SSTable 与 Level1 层的中部分SSTable 进行合并，随后将产生的新 SSTable 文件写入到Level1 层中。
 - 1.先统计Level0 层中所有 SSTable 所覆盖的键的区间。然后在 Level 1层中找到与此区间有交集的所有 SSTable 文件。
-- 2.使用归并排序，将上述所有涉及到的 SSTable 进行合并，并将结果每2MB 分成一个新的 SSTable 文件(最后一个 SSTable 可以不足2MB)，写入到 Level 1 中
+- 2.使用归并排序，将上述所有涉及到的 SSTable 进行合并，并将结果每 2MB 分成一个新的 SSTable 文件(最后一个 SSTable 可以不足2MB)，写入到 Level 1 中
 - 3.若产生的文件数超出 Level1 层限定的数目，则从Level1的 SSTable中，优先选择时间戳最小的若干个文件(时间戳相等选择键最小的文件)， 使得文件数满足层数要求，以同样的方法继续向下一层合并(若没有下一层，则新建一层)。
 
 ![Alt text](../docs/pics/1630394788892.png)

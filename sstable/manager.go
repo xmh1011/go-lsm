@@ -45,10 +45,10 @@ type Manager struct {
 
 	indexMap map[string]int // 用于快速查找 SSTable 的索引
 
-	// DiskMap：不在内存中缓存的文件路径（按层级分布）
-	DiskMap map[int][]string
-	// TotalMap：全部 SSTable 文件路径记录（内存+磁盘）
-	TotalMap map[int][]string
+	// diskMap：不在内存中缓存的文件路径（按层级分布）
+	diskMap map[int][]string
+	// totalMap：全部 SSTable 文件路径记录（内存+磁盘）
+	totalMap map[int][]string
 
 	// 异步合并等待（Level1 及以上）
 	compactionCond  *sync.Cond // 条件变量，用于等待异步合并完成
@@ -59,8 +59,8 @@ type Manager struct {
 func NewSSTableManager() *Manager {
 	mgr := &Manager{
 		metas:           make([]*SSTable, 0),
-		DiskMap:         make(map[int][]string),
-		TotalMap:        make(map[int][]string),
+		diskMap:         make(map[int][]string),
+		totalMap:        make(map[int][]string),
 		indexMap:        make(map[string]int),
 		compacting:      false,
 		compactingLevel: -1,
@@ -85,7 +85,7 @@ func (m *Manager) CreateNewSSTable(imem *memtable.IMemtable) error {
 
 	// 添加到内存中（按照 id 降序排序，只保留最新 100 个）
 	m.addTable(sst)
-	// 同时记录到 TotalMap
+	// 同时记录到 totalMap
 	m.addNewFile(sst.level, filePath)
 
 	// 执行合并逻辑
@@ -152,7 +152,7 @@ func (m *Manager) SearchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
 	return nil, nil
 }
 
-// Recover 加载所有层中 SSTable 的元数据信息到内存中，并记录在 TotalMap 中。
+// Recover 加载所有层中 SSTable 的元数据信息到内存中，并记录在 totalMap 中。
 // 注意：只加载元数据信息，不加载 data block。
 func (m *Manager) Recover() error {
 	var maxID uint64
@@ -227,7 +227,7 @@ func (m *Manager) addTable(table *SSTable) {
 		removed := m.metas[len(m.metas)-1]
 		delete(m.indexMap, removed.FilePath())
 		m.metas = m.metas[:len(m.metas)-1]
-		m.DiskMap[removed.level] = append(m.DiskMap[removed.level], removed.FilePath())
+		m.diskMap[removed.level] = append(m.diskMap[removed.level], removed.FilePath())
 		removed.Close()
 	}
 }
@@ -254,8 +254,8 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 			}
 		}
 
-		m.DiskMap[level] = util.RemoveString(m.DiskMap[level], oldPath)
-		m.TotalMap[level] = util.RemoveString(m.TotalMap[level], oldPath)
+		m.diskMap[level] = util.RemoveString(m.diskMap[level], oldPath)
+		m.totalMap[level] = util.RemoveString(m.totalMap[level], oldPath)
 		// 物理删除文件
 		if err := os.Remove(oldPath); err != nil {
 			log.Errorf("remove file %s error: %s", oldPath, err.Error())
@@ -286,14 +286,14 @@ func (m *Manager) addNewSSTables(newTables []*SSTable, level int) error {
 func (m *Manager) removeFromDiskMap(filePath string, level int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.DiskMap[level] = util.RemoveString(m.DiskMap[level], filePath)
+	m.diskMap[level] = util.RemoveString(m.diskMap[level], filePath)
 }
 
 func (m *Manager) addNewFile(level int, filePath string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.TotalMap[level] = append(m.TotalMap[level], filePath)
+	m.totalMap[level] = append(m.totalMap[level], filePath)
 }
 
 // isFileInMemory 遍历内存中 metas 判断某个文件是否存在
@@ -321,7 +321,7 @@ func (m *Manager) getFilesByLevel(level int) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	return append([]string{}, m.TotalMap[level]...)
+	return append([]string{}, m.totalMap[level]...)
 }
 
 func (m *Manager) isLevelNeedToBeMerged(level int) bool {

@@ -96,7 +96,7 @@ func (m *Manager) compactLevel(level int) error {
 		return nil
 	}
 
-	// 1. 收集当前层文件，要按时间戳排序
+	// 1. 收集当前层需要合并的文件和block，要按时间戳排序
 	var allBlocks []*block.DataBlock
 	var oldFilesLevel []string
 	curLevelFiles := m.getSortedFilesByLevel(level)

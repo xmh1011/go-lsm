@@ -52,15 +52,15 @@ func TestSSTableManagerCompaction(t *testing.T) {
 		assert.True(t, os.IsNotExist(err), "old file should be removed after compaction: %s", f)
 	}
 
-	// 5. 检查 Level0 的 DiskMap 与 TotalMap 均已清空
-	assert.Empty(t, mgr.DiskMap[0], "level0 DiskMap should be empty after compaction")
-	assert.Empty(t, mgr.TotalMap[0], "level0 TotalMap should be empty after compaction")
+	// 5. 检查 Level0 的 diskMap 与 totalMap 均已清空
+	assert.Empty(t, mgr.diskMap[0], "level0 diskMap should be empty after compaction")
+	assert.Empty(t, mgr.totalMap[0], "level0 totalMap should be empty after compaction")
 
 	// 6. 检查 Level1 中应有新生成的文件
-	assert.True(t, len(mgr.TotalMap[1]) > 0, "compaction should produce new files in level1")
+	assert.True(t, len(mgr.totalMap[1]) > 0, "compaction should produce new files in level1")
 
 	// 7. 对 Level1 中的每个新文件尝试解码，并确保包含数据块
-	for _, f := range mgr.TotalMap[1] {
+	for _, f := range mgr.totalMap[1] {
 		sst := NewSSTable()
 		err := sst.DecodeFrom(f)
 		assert.NoError(t, err)

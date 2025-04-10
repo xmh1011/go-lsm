@@ -9,7 +9,7 @@ import (
 	"github.com/xmh1011/go-lsm/sstable/block"
 )
 
-// TestSSTableManagerSearch 重写单元测试，确保恢复时将文件路径同时添加到 DiskMap 和 TotalMap，
+// TestSSTableManagerSearch 重写单元测试，确保恢复时将文件路径同时添加到 diskMap 和 totalMap，
 // 并验证 Search 能正确返回预期值，同时 SSTable 被加载到内存缓存中。
 func TestSSTableManagerSearch(t *testing.T) {
 	// 1. 创建临时目录
@@ -45,11 +45,11 @@ func TestSSTableManagerSearch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.FileExists(t, file)
 
-	// 4. 创建一个 Manager 实例，并把生成的文件路径同时记录到 DiskMap 和 TotalMap 中，
+	// 4. 创建一个 Manager 实例，并把生成的文件路径同时记录到 diskMap 和 totalMap 中，
 	// 模拟从磁盘加载的情况（未缓存状态）。
 	manager := NewSSTableManager()
-	manager.DiskMap[0] = []string{file}
-	manager.TotalMap[0] = []string{file}
+	manager.diskMap[0] = []string{file}
+	manager.totalMap[0] = []string{file}
 
 	// 5. 执行 Search 测试：查询 key "b"，预期返回 "banana"
 	val, err := manager.Search("b")

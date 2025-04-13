@@ -35,6 +35,11 @@ func TestSSTableEncodeDecode(t *testing.T) {
 		FilterBlock: &block.FilterBlock{
 			Filter: filter,
 		},
+		IndexBlock: &block.IndexBlock{
+			Indexes: []*block.IndexEntry{
+				{SeparatorKey: "beta"},
+			},
+		},
 	}
 
 	// 写入到文件

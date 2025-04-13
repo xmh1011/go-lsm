@@ -11,6 +11,7 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/memtable"
+	"github.com/xmh1011/go-lsm/sstable/block"
 	"github.com/xmh1011/go-lsm/util"
 )
 
@@ -36,19 +37,26 @@ func init() {
 	}
 }
 
+type FileInfo struct {
+	filePath string
+	minKey   kv.Key
+}
+
 // Manager 管理内存中的 SSTable 元信息（Footer/Filter/Index）+ 磁盘中剩余的文件记录。
 type Manager struct {
-	mu sync.RWMutex
+	mu sync.Mutex
 
 	// metas 保存所有保留在内存中的 SSTable 元信息，按 sst.id 降序排序（最新的在最前）
 	metas []*SSTable
 
 	indexMap map[string]int // 用于快速查找 SSTable 的索引
 
-	// diskMap：不在内存中缓存的文件路径（按层级分布）
-	diskMap map[int][]string
+	// 稀疏索引，用于记录 level 1 及以上的文件的索引信息
+	// 通过二分查找，快速定位 key 可能在的文件块
+	sparseIndex *block.SparseIndex
+
 	// totalMap：全部 SSTable 文件路径记录（内存+磁盘）
-	totalMap map[int][]string
+	totalMap map[int][]FileInfo
 
 	// 异步合并等待（Level1 及以上）
 	compactionCond  *sync.Cond // 条件变量，用于等待异步合并完成
@@ -59,9 +67,9 @@ type Manager struct {
 func NewSSTableManager() *Manager {
 	mgr := &Manager{
 		metas:           make([]*SSTable, 0),
-		diskMap:         make(map[int][]string),
-		totalMap:        make(map[int][]string),
+		totalMap:        make(map[int][]FileInfo),
 		indexMap:        make(map[string]int),
+		sparseIndex:     block.NewSparseIndex(),
 		compacting:      false,
 		compactingLevel: -1,
 	}
@@ -82,11 +90,7 @@ func (m *Manager) CreateNewSSTable(imem *memtable.IMemtable) error {
 		return err
 	}
 	sst.DataBlocks = nil
-
-	// 添加到内存中（按照 id 降序排序，只保留最新 100 个）
 	m.addTable(sst)
-	// 同时记录到 totalMap
-	m.addNewFile(sst.level, filePath)
 
 	// 执行合并逻辑
 	if err := m.Compaction(); err != nil {
@@ -185,10 +189,10 @@ func (m *Manager) Recover() error {
 				log.Errorf("Recover: load meta for file %s error: %s", filePath, err.Error())
 				return err
 			}
-			m.addNewFile(table.level, filePath)
 			m.addTable(table)
 		}
 	}
+	m.sparseIndex.Sort() // 排序稀疏索引
 	idGenerator.Add(maxID)
 	return nil
 }
@@ -198,6 +202,12 @@ func (m *Manager) Recover() error {
 func (m *Manager) addTable(table *SSTable) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// 更新 totalMap：将文件信息加入指定层的记录
+	m.totalMap[table.level] = append(m.totalMap[table.level], FileInfo{
+		minKey:   table.IndexBlock.StartKey,
+		filePath: table.filePath,
+	})
 
 	idx := sort.Search(len(m.metas), func(i int) bool {
 		if m.metas[i].level > table.level {
@@ -209,12 +219,17 @@ func (m *Manager) addTable(table *SSTable) {
 		return m.metas[i].id < table.id
 	})
 
-	// 插入 metas
+	// 若当前层为 Level1 及以上，则追加索引记录
+	if table.level > minSSTableLevel {
+		m.sparseIndex.AddFromIndexBlock(table.level, table.filePath, table.IndexBlock)
+	}
+
+	// 插入 metas，保证按照 sst.id 降序排序
 	m.metas = append(m.metas, nil)
 	copy(m.metas[idx+1:], m.metas[idx:])
 	m.metas[idx] = table
 
-	// 更新 indexMap（注意：插入后，所有 index >= idx 的都要加1）
+	// 更新 indexMap，确保每个文件对应的索引正确
 	for path, i := range m.indexMap {
 		if i >= idx {
 			m.indexMap[path] = i + 1
@@ -222,12 +237,11 @@ func (m *Manager) addTable(table *SSTable) {
 	}
 	m.indexMap[table.FilePath()] = idx
 
-	// 超限移除最后一个
+	// 超限则移除最后一个
 	if len(m.metas) > maxSSTableCount {
 		removed := m.metas[len(m.metas)-1]
 		delete(m.indexMap, removed.FilePath())
 		m.metas = m.metas[:len(m.metas)-1]
-		m.diskMap[removed.level] = append(m.diskMap[removed.level], removed.FilePath())
 		removed.Close()
 	}
 }
@@ -238,26 +252,34 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 	defer m.mu.Unlock()
 
 	for _, oldPath := range oldFiles {
-		idx, ok := m.indexMap[oldPath]
-		if !ok || idx >= len(m.metas) {
-			continue
-		}
-
-		// 删除 metas[idx]
-		m.metas = append(m.metas[:idx], m.metas[idx+1:]...)
-		delete(m.indexMap, oldPath)
-
-		// 调整 indexMap 中所有大于 idx 的项索引
-		for path, i := range m.indexMap {
-			if i > idx {
-				m.indexMap[path] = i - 1
+		// 删除内存中的 SSTable 元数据（更新 metas 和 indexMap）
+		if idx, ok := m.indexMap[oldPath]; ok && idx < len(m.metas) {
+			m.metas = append(m.metas[:idx], m.metas[idx+1:]...)
+			delete(m.indexMap, oldPath)
+			// 调整 indexMap 中后续记录的索引
+			for path, i := range m.indexMap {
+				if i > idx {
+					m.indexMap[path] = i - 1
+				}
 			}
 		}
 
-		m.diskMap[level] = util.RemoveString(m.diskMap[level], oldPath)
-		m.totalMap[level] = util.RemoveString(m.totalMap[level], oldPath)
-		// 物理删除文件
-		if err := os.Remove(oldPath); err != nil {
+		// 从 totalMap 删除对应的 FileInfo
+		filtered := make([]FileInfo, 0, len(m.totalMap[level]))
+		for _, fi := range m.totalMap[level] {
+			if fi.filePath != oldPath {
+				filtered = append(filtered, fi)
+			}
+		}
+		m.totalMap[level] = filtered
+
+		// 更新稀疏索引：删除该文件对应的所有索引记录
+		if level > minSSTableLevel {
+			m.sparseIndex.RemoveByFileName(oldPath)
+		}
+
+		// 删除物理文件
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
 			log.Errorf("remove file %s error: %s", oldPath, err.Error())
 			return err
 		}
@@ -268,47 +290,29 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 
 // addNewSSTables 用于将新表加入内存和对应 level
 func (m *Manager) addNewSSTables(newTables []*SSTable, level int) error {
+	// 新表先全部写入磁盘，并用 addTable 增加内存记录，同时更新稀疏索引（追加新索引记录）
 	for _, nt := range newTables {
-		// 写入磁盘
+		// 将 SSTable 写入磁盘
 		if err := nt.EncodeTo(nt.FilePath()); err != nil {
 			log.Errorf("encode sstable to file %s error: %s", nt.FilePath(), err.Error())
 			return err
 		}
 		nt.DataBlocks = nil
-		// 使用 addTable 插入到内存中，保持 metas 排序与大小限制
 		m.addTable(nt)
-		m.addNewFile(level, nt.FilePath())
 	}
+
+	// 加锁后对稀疏索引整体排序，确保索引 Position 顺序正确
+	m.mu.Lock()
+	m.sparseIndex.Sort()
+	m.mu.Unlock()
 
 	return nil
 }
 
-func (m *Manager) removeFromDiskMap(filePath string, level int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.diskMap[level] = util.RemoveString(m.diskMap[level], filePath)
-}
-
-func (m *Manager) addNewFile(level int, filePath string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalMap[level] = append(m.totalMap[level], filePath)
-}
-
-// isFileInMemory 遍历内存中 metas 判断某个文件是否存在
-func (m *Manager) isFileInMemory(filePath string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	_, ok := m.indexMap[filePath]
-	return ok
-}
-
 // isFileInMemoryAndReturn 判断并返回内存中对应的 SSTable
 func (m *Manager) isFileInMemoryAndReturn(filePath string) (*SSTable, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	idx, ok := m.indexMap[filePath]
 	if !ok || idx >= len(m.metas) {
@@ -318,14 +322,37 @@ func (m *Manager) isFileInMemoryAndReturn(filePath string) (*SSTable, bool) {
 }
 
 func (m *Manager) getFilesByLevel(level int) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	return append([]string{}, m.totalMap[level]...)
+	var files []string
+	fileInfos := m.totalMap[level]
+	for _, fileInfo := range fileInfos {
+		files = append(files, fileInfo.filePath)
+	}
+
+	return files
 }
 
 func (m *Manager) isLevelNeedToBeMerged(level int) bool {
 	return len(m.getFilesByLevel(level)) > maxFileNumsInLevel(level)
+}
+
+// getLevelSortedFilesByKey 返回磁盘中某层的所有文件，按照 minKey 进行排序
+func (m *Manager) getLevelSortedFilesByKey(level int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var files []string
+	fileInfos := m.totalMap[level]
+	sort.Slice(fileInfos, func(i, j int) bool {
+		return fileInfos[i].minKey < fileInfos[j].minKey
+	})
+	for _, fileInfo := range fileInfos {
+		files = append(files, fileInfo.filePath)
+	}
+
+	return files
 }
 
 // getSortedFilesByLevel 返回磁盘中某层的所有文件，按照 id（时间戳）的大小排序
@@ -338,13 +365,108 @@ func (m *Manager) getSortedFilesByLevel(level int) []string {
 	return files
 }
 
-// getAll 返回内存中所有 SSTable 元数据的副本
-func (m *Manager) getAll() []*SSTable {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cpy := make([]*SSTable, len(m.metas))
-	copy(cpy, m.metas)
-	return cpy
+func (m *Manager) getLevelSmallestKFilesByKey(level int, k int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	fileInfos := m.totalMap[level]
+	n := len(fileInfos)
+	if k >= n {
+		// 如果 k >= 全部文件数，直接全部排序返回
+		sort.Slice(fileInfos, func(i, j int) bool {
+			return fileInfos[i].minKey < fileInfos[j].minKey
+		})
+		files := make([]string, 0, n)
+		for _, f := range fileInfos {
+			files = append(files, f.filePath)
+		}
+		return files
+	}
+
+	// 使用 QuickSelect 找到前 k 小
+	quickSelect(fileInfos, 0, n-1, k)
+
+	// 对前 k 个元素再排序一次，确保顺序性
+	sort.Slice(fileInfos[:k], func(i, j int) bool {
+		return fileInfos[i].minKey < fileInfos[j].minKey
+	})
+
+	files := make([]string, 0, k)
+	for i := 0; i < k; i++ {
+		files = append(files, fileInfos[i].filePath)
+	}
+	return files
+}
+
+func (m *Manager) getSSTablesSortedByID(level int) []*SSTable {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var result []*SSTable
+	files := m.totalMap[level]
+	sort.Slice(files, func(i, j int) bool {
+		return util.ExtractID(files[i].filePath) < util.ExtractID(files[j].filePath)
+	})
+
+	for _, fi := range files {
+		if idx, ok := m.indexMap[fi.filePath]; ok && idx < len(m.metas) {
+			result = append(result, m.metas[idx])
+		}
+	}
+	return result
+}
+
+func (m *Manager) findPositionByKey(key kv.Key) *block.Position {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.sparseIndex.FindPositionByKey(key)
+}
+
+func (m *Manager) waitIfLevelCompacting(level int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var wait bool
+	for m.compacting && m.compactingLevel == level {
+		wait = true
+		m.compactionCond.Wait()
+	}
+	return wait
+}
+
+func (m *Manager) getCompactingLevel() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.compactingLevel
+}
+
+func quickSelect(arr []FileInfo, left, right, k int) {
+	if left >= right {
+		return
+	}
+	pivotIndex := partition(arr, left, right)
+	if pivotIndex == k {
+		return
+	} else if pivotIndex > k {
+		quickSelect(arr, left, pivotIndex-1, k)
+	} else {
+		quickSelect(arr, pivotIndex+1, right, k)
+	}
+}
+
+func partition(arr []FileInfo, left, right int) int {
+	pivot := arr[right]
+	i := left
+	for j := left; j < right; j++ {
+		if arr[j].minKey < pivot.minKey {
+			arr[i], arr[j] = arr[j], arr[i]
+			i++
+		}
+	}
+	arr[i], arr[right] = arr[right], arr[i]
+	return i
 }
 
 func maxFileNumsInLevel(level int) int {

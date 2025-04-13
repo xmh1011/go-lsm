@@ -222,7 +222,8 @@ func chiTestBloom(m, k, rounds uint, elements [][]byte) (succeeds bool) {
 	table := [20]float64{
 		7.879, 10.597, 12.838, 14.86, 16.75, 18.548, 20.278,
 		21.955, 23.589, 25.188, 26.757, 28.3, 29.819, 31.319, 32.801, 34.267,
-		35.718, 37.156, 38.582, 39.997}
+		35.718, 37.156, 38.582, 39.997,
+	}
 	df := min(m-1, 20)
 
 	succeeds = table[df-1] > chiStatistic

@@ -80,7 +80,7 @@ func InitLogger(configPath string) error {
 		if Config.Path == "" {
 			Config.Path = util.GetCurrentDir()
 		}
-		if err := os.MkdirAll(Config.Path, 0755); err != nil {
+		if err := os.MkdirAll(Config.Path, 0o755); err != nil {
 			return
 		}
 

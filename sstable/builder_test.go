@@ -45,10 +45,10 @@ func TestSSTableBuilderBasic(t *testing.T) {
 
 	// 6. 验证 IndexBlock
 	assert.NotNil(t, sst.IndexBlock)
-	assert.Equal(t, 2, len(sst.IndexBlock.Indexes), "only 1 block, so 1 index entry")
+	assert.Equal(t, 1, len(sst.IndexBlock.Indexes), "only 1 block, so 1 index entry")
 
-	assert.Equal(t, kv.Key("alpha"), sst.IndexBlock.Indexes[0].SeparatorKey, "start key of block is alpha")
-	assert.Equal(t, kv.Key("gamma"), sst.IndexBlock.Indexes[len(sst.IndexBlock.Indexes)-1].SeparatorKey, "end key of block is gamma")
+	assert.Equal(t, kv.Key("alpha"), sst.IndexBlock.StartKey, "start key of block is alpha")
+	assert.Equal(t, kv.Key("gamma"), sst.IndexBlock.Indexes[0].SeparatorKey, "end key of block is gamma")
 }
 
 func TestSSTableBuilderShouldFlush(t *testing.T) {

@@ -35,37 +35,48 @@ func (m *Manager) Compaction() error {
 	var allBlocks []*block.DataBlock
 	var oldLevel0Files []string
 	for _, path := range level0Files {
-		sst := NewSSTable()
-		if err := sst.DecodeFrom(path); err != nil {
+		sst, ok := m.isFileInMemoryAndReturn(path)
+		if !ok {
+			sst = NewSSTable()
+			if err := sst.DecodeMetaData(path); err != nil {
+				log.Errorf("decode metadata error: %s", err.Error())
+				return err
+			}
+		}
+		if err := sst.DecodeDataBlocks(); err != nil {
 			log.Errorf("decode L0 sstable from file %s error: %s", path, err.Error())
 			return err
+		}
+		if !ok {
+			sst.Close()
 		}
 		allBlocks = append(allBlocks, sst.DataBlocks...)
 		oldLevel0Files = append(oldLevel0Files, path)
 	}
 
+	nextLevel := minSSTableLevel + 1
 	minK, maxK := getGlobalKeyRange(allBlocks)
-	newBlocks, oldLevel1Files, err := m.mergeNextLevelFiles(minSSTableLevel+1, minK, maxK)
+	newBlocks, oldLevel1Files, err := m.mergeNextLevelFiles(nextLevel, minK, maxK)
 	if err != nil {
 		log.Errorf("merge next level files error: %s", err.Error())
 		return err
 	}
 	allBlocks = append(allBlocks, newBlocks...) // 将 Level1 的 blocks 加入到 allBlocks 中
 
-	newTables := CompactAndMergeBlocks(allBlocks, minSSTableLevel+1)
+	newTables := CompactAndMergeBlocks(allBlocks, nextLevel)
 	if err := m.removeOldSSTables(oldLevel0Files, minSSTableLevel); err != nil {
 		return err
 	}
-	if err := m.removeOldSSTables(oldLevel1Files, minSSTableLevel+1); err != nil {
+	if err := m.removeOldSSTables(oldLevel1Files, nextLevel); err != nil {
 		return err
 	}
-	if err := m.addNewSSTables(newTables, minSSTableLevel+1); err != nil {
+	if err := m.addNewSSTables(newTables, nextLevel); err != nil {
 		return err
 	}
 
-	if m.isLevelNeedToBeMerged(minSSTableLevel+1) && !m.isCompacting() {
-		m.startCompaction(minSSTableLevel + 1)
-		go m.asyncCompactLevel(minSSTableLevel + 1)
+	if m.isLevelNeedToBeMerged(nextLevel) && !m.isCompacting() {
+		m.startCompaction(nextLevel)
+		go m.asyncCompactLevel(nextLevel)
 	}
 
 	return nil
@@ -80,11 +91,7 @@ func (m *Manager) asyncCompactLevel(level int) {
 		}
 	}
 
-	m.mu.Lock()
-	m.compacting = false
-	m.compactingLevel = -1
-	m.compactionCond.Broadcast()
-	m.mu.Unlock()
+	m.endCompaction()
 }
 
 // compactLevel 同步合并指定层（Level1 及以上）。
@@ -96,25 +103,31 @@ func (m *Manager) compactLevel(level int) error {
 		return nil
 	}
 
-	// 1. 收集当前层需要合并的文件和block，要按时间戳排序
+	// 1. 合并key最小的几个文件
 	var allBlocks []*block.DataBlock
-	var oldFilesLevel []string
-	curLevelFiles := m.getSortedFilesByLevel(level)
-	if len(curLevelFiles) == 0 {
+	oldFiles := m.getLevelSmallestKFilesByKey(level, len(m.getFilesByLevel(level))-maxFileNumsInLevel(level))
+	if len(oldFiles) == 0 {
+		log.Info(11111111111)
 		return nil
 	}
-
-	// 将当前层最老的文件加载到内存，与下一层所有文件合并
-	expectedFileNum := maxFileNumsInLevel(level)
-	for i := 0; i < len(curLevelFiles)-expectedFileNum; i++ {
-		path := curLevelFiles[i]
-		sst := NewSSTable()
-		if err := sst.DecodeFrom(path); err != nil {
-			log.Errorf("decode sstable from file %s error: %s", path, err.Error())
+	log.Infof("files: %s", oldFiles)
+	for _, file := range oldFiles {
+		sst, ok := m.isFileInMemoryAndReturn(file)
+		if !ok {
+			sst = NewSSTable()
+			if err := sst.DecodeMetaData(file); err != nil {
+				log.Errorf("decode metadata error: %s", err.Error())
+				return err
+			}
+		}
+		if err := sst.DecodeDataBlocks(); err != nil {
+			log.Errorf("decode L0 sstable from file %s error: %s", file, err.Error())
 			return err
 		}
+		if !ok {
+			sst.Close()
+		}
 		allBlocks = append(allBlocks, sst.DataBlocks...)
-		oldFilesLevel = append(oldFilesLevel, path)
 	}
 
 	// 2. 找到下一层
@@ -130,7 +143,7 @@ func (m *Manager) compactLevel(level int) error {
 	// 合并
 	newTables := CompactAndMergeBlocks(allBlocks, nextLevel)
 	// 移除旧文件
-	if err := m.removeOldSSTables(oldFilesLevel, level); err != nil {
+	if err := m.removeOldSSTables(oldFiles, level); err != nil {
 		return err
 	}
 	if err := m.removeOldSSTables(oldNextFiles, nextLevel); err != nil {
@@ -233,11 +246,13 @@ func getGlobalKeyRange(blocks []*block.DataBlock) (kv.Key, kv.Key) {
 	return minKey, maxKey
 }
 
-func (m *Manager) isCompacting() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *Manager) waitLevelCompaction(level int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	return m.compacting
+	for m.compacting && m.compactingLevel == level {
+		m.compactionCond.Wait()
+	}
 }
 
 func (m *Manager) startCompaction(level int) {
@@ -246,6 +261,22 @@ func (m *Manager) startCompaction(level int) {
 
 	m.compacting = true
 	m.compactingLevel = level
+}
+
+func (m *Manager) endCompaction() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.compacting = false
+	m.compactingLevel = -1
+	m.compactionCond.Broadcast()
+}
+
+func (m *Manager) isCompacting() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.compacting
 }
 
 // overlapRange 判断 global range [minKey, maxKey] 是否与 sst 索引区间有交集

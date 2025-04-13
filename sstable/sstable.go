@@ -44,12 +44,6 @@ type SSTable struct {
 
 	// Footer 指向索引的索引，固定长度
 	Footer block.Footer
-
-	// references 是 SSTable 的引用计数，用于管理 SSTable 的生命周期
-	// 通常我们在 compaction 之后 会尝试移除旧的 SSTable。
-	// 此时，需要检查它是否仍然被其他地方使用。如果还有引用（ref > 0），就不能删除。
-	// TODO: 未实现
-	references atomic.Int64
 }
 
 func NewSSTable() *SSTable {
@@ -75,6 +69,20 @@ func NewSSTableWithLevel(level int) *SSTable {
 	table.level = level
 	table.filePath = sstableFilePath(table.id, level, config.GetSSTablePath())
 	return table
+}
+
+func (t *SSTable) SearchFromTable(key kv.Key) (kv.Value, error) {
+	if !t.MayContain(key) {
+		return nil, nil
+	}
+	it := NewSSTableIterator(t)
+	it.Seek(key)
+	if it.Valid() && it.Key() == key {
+		val := it.Value()
+		return val, nil
+	}
+
+	return nil, nil
 }
 
 func (t *SSTable) DecodeMetaData(filePath string) error {
@@ -153,36 +161,24 @@ func (t *SSTable) DecodeFrom(filePath string) error {
 // EncodeTo 将 SSTable 的各个部分（DataBlocks、IndexBlock、FilterBlock、Footer）依次写入文件中
 func (t *SSTable) EncodeTo(filePath string) error {
 	var err error
-	if err = os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 		log.Errorf("create directory %s error: %s", filepath.Dir(filePath), err.Error())
 		return fmt.Errorf("create directory failed: %w", err)
 	}
-	t.file, err = os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	t.file, err = os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
 	t.filePath = filePath
 
-	// 清空 IndexBlock 信息
-	t.IndexBlock = block.NewIndexBlock()
-	t.IndexBlock.Indexes = make([]*block.IndexEntry, len(t.DataBlocks))
-
-	// 1. DataBlocks：依次写入各个数据块，并记录它们的 Handle 到 IndexBlock.Indexes
+	// 1. DataBlocks：依次写入各个数据块，并记录它们的 Handle
 	for i, dataBlock := range t.DataBlocks {
 		// 编码写入当前 DataBlock
-		t.IndexBlock.Indexes[i] = block.NewIndexEntry()
 		t.IndexBlock.Indexes[i].Handle, err = dataBlock.EncodeTo(t.file)
 		if err != nil {
 			log.Errorf("encode DataBlock failed: %s", err.Error())
 			return fmt.Errorf("encode DataBlock failed: %w", err)
-		}
-		// 计算当前 DataBlock 的分割键
-		if len(dataBlock.Records) > 0 {
-			if i == 0 {
-				t.IndexBlock.StartKey = dataBlock.Records[0].Key
-			}
-			t.IndexBlock.Indexes[i].SeparatorKey = dataBlock.Records[len(dataBlock.Records)-1].Key
 		}
 	}
 
@@ -208,13 +204,6 @@ func (t *SSTable) EncodeTo(filePath string) error {
 	}
 
 	return nil
-}
-
-// incrementReference increments the references of the SSTable.
-// A reference is typically used when an SSTable is to be removed (usually after compaction).
-// An SSTable with a reference (/usage) > 0 can not be removed unless all the references to the SSTable are dropped.
-func (t *SSTable) incrementReference() {
-	t.references.Add(1)
 }
 
 // LoadSpecifiedDataBlock 根据块号加载 DataBlocks 中对应的记录，并返回 Block 对象。
@@ -243,11 +232,6 @@ func (t *SSTable) MayContain(key kv.Key) bool {
 // Id returns the id of SSTable.
 func (t *SSTable) Id() uint64 {
 	return t.id
-}
-
-// TotalReferences returns the total references to the SSTable.
-func (t *SSTable) TotalReferences() int64 {
-	return t.references.Load()
 }
 
 // Remove 释放 SSTable

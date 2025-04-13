@@ -15,17 +15,17 @@ package wal
 import (
 	"bytes"
 	"fmt"
-	"github.com/xmh1011/go-lsm/config"
 	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/xmh1011/go-lsm/config"
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 )
 
 const (
-	defaultWALFileMode   = 0666
+	defaultWALFileMode   = 0o666
 	defaultWALFileSuffix = "wal"
 )
 
@@ -93,7 +93,7 @@ func (w *WAL) Append(pair kv.KeyValuePair) error {
 
 // Recover reads the WAL file and calls the callback function for each KeyValuePair.
 func Recover(path string, callback func(pair kv.KeyValuePair)) (*WAL, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(path, os.O_RDONLY|os.O_APPEND, 0o666)
 	if err != nil {
 		log.Errorf("open wal file failed: %s", err.Error())
 		return nil, fmt.Errorf("open wal file failed: %w", err)

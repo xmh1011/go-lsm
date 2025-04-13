@@ -31,6 +31,23 @@ func NewDataBlock() *DataBlock {
 	}
 }
 
+func SearchFromDataBlock(r io.ReadSeeker, handle Handle, key kv.Key) (kv.Value, error) {
+	dataBlock := NewDataBlock()
+	if err := dataBlock.DecodeFrom(r, handle); err != nil {
+		log.Errorf("search from data block find key err: %s", err.Error())
+		return nil, err
+	}
+
+	it := NewDataBlockIterator(dataBlock)
+	it.Seek(key)
+	if it.Valid() && it.Key() == key {
+		val := it.Value()
+		return val, nil
+	}
+
+	return nil, nil
+}
+
 // DecodeFrom 从文件中读取数据块，并解析出其中的记录。
 func (d *DataBlock) DecodeFrom(r io.ReadSeeker, handle Handle) error {
 	if _, err := r.Seek(int64(handle.Offset), io.SeekStart); err != nil {

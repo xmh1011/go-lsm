@@ -67,9 +67,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/bits-and-blooms/bitset"
 	"io"
 	"math"
+
+	"github.com/bits-and-blooms/bitset"
 
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"

@@ -11,11 +11,12 @@
 package memtable
 
 import (
+	"os"
+
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/memtable/skiplist"
 	"github.com/xmh1011/go-lsm/wal"
-	"os"
 )
 
 // IMemtable is an immutable memtable, used for flush/compaction.

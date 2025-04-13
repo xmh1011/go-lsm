@@ -38,6 +38,9 @@ func TestSSTableManagerSearch(t *testing.T) {
 			sst.FilterBlock.Filter.Add([]byte(pair.Key))
 		}
 	}
+	sst.IndexBlock.Indexes = append(sst.IndexBlock.Indexes, block.NewIndexEntry())
+	sst.IndexBlock.StartKey = "a"
+	sst.IndexBlock.Indexes[0].SeparatorKey = "c"
 
 	// 3. 写入 SSTable 到文件系统
 	file := sst.FilePath()
@@ -48,8 +51,11 @@ func TestSSTableManagerSearch(t *testing.T) {
 	// 4. 创建一个 Manager 实例，并把生成的文件路径同时记录到 diskMap 和 totalMap 中，
 	// 模拟从磁盘加载的情况（未缓存状态）。
 	manager := NewSSTableManager()
-	manager.diskMap[0] = []string{file}
-	manager.totalMap[0] = []string{file}
+	manager.totalMap[0] = []FileInfo{
+		{
+			filePath: file,
+		},
+	}
 
 	// 5. 执行 Search 测试：查询 key "b"，预期返回 "banana"
 	val, err := manager.Search("b")

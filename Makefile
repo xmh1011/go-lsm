@@ -9,6 +9,8 @@ endif
 BINARY_NAME = go-lsm
 OUTPUT_DIR = output
 TEST_FILE = unittest.txt coverage.out bench_test.txt bench_custom.txt
+OUT_DATA = ../data
+
 MAIN_SRC = ./main.go
 GO_PACKAGES  := $$($(GO) list ./...| grep -vE "vendor")
 
@@ -25,10 +27,8 @@ set-env:
 #make prepare, download dependencies
 prepare: gomod
 prepare-dep:
-	$(GO) env
 	$(GO) mod download -x
 gomod: set-env
-	$(GO) env          # 打印出 go 环境信息，可用于排查问题
 	$(GO) mod tidy
 	$(GO) mod download || $(GO) mod download -x  # 下载 依赖
 
@@ -54,6 +54,7 @@ clean:
 clean-data:
 	@echo "Cleaning up data files..."
 	find . -type f \( -name "*.sst" -o -name "*.wal" \) -delete
+	rm -rf OUT_DATA
 
 # Test the application
 test: prepare test-case

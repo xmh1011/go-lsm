@@ -12,13 +12,14 @@ package memtable
 
 import (
 	"fmt"
+	"path/filepath"
+
 	"github.com/xmh1011/go-lsm/config"
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/memtable/skiplist"
 	"github.com/xmh1011/go-lsm/util"
 	"github.com/xmh1011/go-lsm/wal"
-	"path/filepath"
 )
 
 const (

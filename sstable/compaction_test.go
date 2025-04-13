@@ -39,7 +39,6 @@ func TestSSTableManagerCompaction(t *testing.T) {
 		oldFiles = append(oldFiles, path)
 		// 模拟该文件目前在磁盘中
 		mgr.addTable(sst)
-		mgr.addNewFile(0, sst.FilePath())
 	}
 
 	// 3. 触发 Compaction
@@ -53,7 +52,6 @@ func TestSSTableManagerCompaction(t *testing.T) {
 	}
 
 	// 5. 检查 Level0 的 diskMap 与 totalMap 均已清空
-	assert.Empty(t, mgr.diskMap[0], "level0 diskMap should be empty after compaction")
 	assert.Empty(t, mgr.totalMap[0], "level0 totalMap should be empty after compaction")
 
 	// 6. 检查 Level1 中应有新生成的文件
@@ -62,7 +60,7 @@ func TestSSTableManagerCompaction(t *testing.T) {
 	// 7. 对 Level1 中的每个新文件尝试解码，并确保包含数据块
 	for _, f := range mgr.totalMap[1] {
 		sst := NewSSTable()
-		err := sst.DecodeFrom(f)
+		err := sst.DecodeFrom(f.filePath)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, sst.DataBlocks)
 	}

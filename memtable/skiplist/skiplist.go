@@ -16,8 +16,10 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 )
 
-const maxLevel = 32
-const pFactor = 0.25
+const (
+	maxLevel = 32
+	pFactor  = 0.25
+)
 
 // Node 跳表节点的实现
 // Pair: 存储在kv包中定义的KV键值对

@@ -84,7 +84,7 @@ func (w *rotatingWriter) rotateFile() error {
 
 	// 生成新的文件名
 	filename := w.makeLogFileName()
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("无法创建日志文件: %v", err)
 	}

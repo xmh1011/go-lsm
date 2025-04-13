@@ -190,14 +190,13 @@ func (s *SparseIndex) FindPositionByKey(key kv.Key) *Position {
 // 只加入，不排序，等最后插入完毕再排序，这样性能最优。
 func (s *SparseIndex) AddFromIndexBlock(level int, fileName string, indexBlock *IndexBlock) {
 	for _, entry := range indexBlock.Indexes {
-		pos := NewPosition(level, fileName, entry)
-		s.Positions = append(s.Positions, pos)
+		s.Positions = append(s.Positions, NewPosition(level, fileName, entry))
 	}
 }
 
 // RemoveByFileName 从稀疏索引中移除指定文件的所有 Position
 func (s *SparseIndex) RemoveByFileName(fileName string) {
-	newPositions := s.Positions[:0]
+	newPositions := make([]*Position, 0)
 	for _, pos := range s.Positions {
 		if pos.FileName != fileName {
 			newPositions = append(newPositions, pos)

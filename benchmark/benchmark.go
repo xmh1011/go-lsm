@@ -20,10 +20,10 @@ const (
 func main() {
 	var totalWriteTime time.Duration
 	var totalReadTime time.Duration
-	var totalWriteOps float64
-	var totalReadOps float64
-	var totalWriteNsOp float64
-	var totalReadNsOp float64
+	var totalWriteOps int
+	var totalReadOps int
+	var totalWriteNs int64
+	var totalReadNs int64
 
 	db := database.Open("testDB")
 	kvMap := make(map[string][]byte, numPutOperations*numRounds)
@@ -43,8 +43,9 @@ func main() {
 			kvMap[key] = val
 		}
 		elapsedWrite := time.Since(startWrite)
-		opsPerSecWrite := float64(numPutOperations) / elapsedWrite.Seconds()
-		avgLatencyWrite := float64(elapsedWrite.Nanoseconds()) / float64(numPutOperations)
+		totalWriteTime += elapsedWrite
+		totalWriteOps += numPutOperations
+		totalWriteNs += elapsedWrite.Nanoseconds()
 
 		// 读取测试
 		time.Sleep(200 * time.Millisecond)
@@ -65,30 +66,23 @@ func main() {
 			}
 		}
 		elapsedRead := time.Since(startRead)
-		opsPerSecRead := float64(numGetOperations) / elapsedRead.Seconds()
-		avgLatencyRead := float64(elapsedRead.Nanoseconds()) / float64(numGetOperations)
-
-		// 累加
-		totalWriteTime += elapsedWrite
 		totalReadTime += elapsedRead
-		totalWriteOps += opsPerSecWrite
-		totalReadOps += opsPerSecRead
-		totalWriteNsOp += avgLatencyWrite
-		totalReadNsOp += avgLatencyRead
+		totalReadOps += numGetOperations
+		totalReadNs += elapsedRead.Nanoseconds()
 	}
 
 	// 平均输出
 	fmt.Println("==============================================")
 	fmt.Printf(" 测试目录   : %s\n", config.GetRootPath())
 	fmt.Printf(" 循环轮数   : %d\n", numRounds)
-	fmt.Printf(" 写入总数   : %d\n", numPutOperations*numRounds)
+	fmt.Printf(" 写入总数   : %d\n", totalWriteOps)
 	fmt.Printf(" 写入耗时   : %s (平均)\n", totalWriteTime/time.Duration(numRounds))
-	fmt.Printf(" 写 ops/s  : %.2f (平均)\n", totalWriteOps/float64(numRounds))
-	fmt.Printf(" 写 ns/op  : %.2f (平均)\n", totalWriteNsOp/float64(numRounds))
-	fmt.Printf(" 读取总数   : %d\n", numGetOperations*numRounds)
+	fmt.Printf(" 写 ops/s  : %.2f (平均)\n", float64(totalWriteOps)/totalWriteTime.Seconds())
+	fmt.Printf(" 写 ns/op  : %.2f (平均)\n", float64(totalWriteNs)/float64(totalWriteOps))
+	fmt.Printf(" 读取总数   : %d\n", totalReadOps)
 	fmt.Printf(" 读取耗时   : %s (平均)\n", totalReadTime/time.Duration(numRounds))
-	fmt.Printf(" 读 ops/s  : %.2f (平均)\n", totalReadOps/float64(numRounds))
-	fmt.Printf(" 读 ns/op  : %.2f (平均)\n", totalReadNsOp/float64(numRounds))
+	fmt.Printf(" 读 ops/s  : %.2f (平均)\n", float64(totalReadOps)/totalReadTime.Seconds())
+	fmt.Printf(" 读 ns/op  : %.2f (平均)\n", float64(totalReadNs)/float64(totalReadOps))
 	fmt.Println("==============================================")
 }
 

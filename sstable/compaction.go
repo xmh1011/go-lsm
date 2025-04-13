@@ -21,6 +21,9 @@ import (
 // 4. 删除旧 Level0 和 Level1 文件，并加入新文件记录。
 // 5. 如果 Level1 超限，异步触发后续合并。
 func (m *Manager) Compaction() error {
+	m.levelLocks[minSSTableLevel].Lock()
+	defer m.levelLocks[minSSTableLevel].Unlock()
+
 	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
 		log.Debug("level 0 not need to be merged")
 		return nil
@@ -35,20 +38,14 @@ func (m *Manager) Compaction() error {
 	var allBlocks []*block.DataBlock
 	var oldLevel0Files []string
 	for _, path := range level0Files {
-		sst, ok := m.isFileInMemoryAndReturn(path)
-		if !ok {
-			sst = NewSSTable()
-			if err := sst.DecodeMetaData(path); err != nil {
-				log.Errorf("decode metadata error: %s", err.Error())
-				return err
-			}
-		}
-		if err := sst.DecodeDataBlocks(); err != nil {
-			log.Errorf("decode L0 sstable from file %s error: %s", path, err.Error())
+		sst, err := m.getSSTableMetaInfo(path)
+		if err != nil {
+			log.Errorf("decode sstable meta info from file %s error: %s", path, err.Error())
 			return err
 		}
-		if !ok {
-			sst.Close()
+		if err := sst.DecodeDataBlocks(); err != nil {
+			log.Errorf("decode sstable data info from file %s error: %s", path, err.Error())
+			return err
 		}
 		allBlocks = append(allBlocks, sst.DataBlocks...)
 		oldLevel0Files = append(oldLevel0Files, path)
@@ -70,7 +67,7 @@ func (m *Manager) Compaction() error {
 	if err := m.removeOldSSTables(oldLevel1Files, nextLevel); err != nil {
 		return err
 	}
-	if err := m.addNewSSTables(newTables, nextLevel); err != nil {
+	if err := m.addNewSSTables(newTables); err != nil {
 		return err
 	}
 
@@ -96,6 +93,9 @@ func (m *Manager) asyncCompactLevel(level int) {
 
 // compactLevel 同步合并指定层（Level1 及以上）。
 func (m *Manager) compactLevel(level int) error {
+	m.levelLocks[level].Lock()
+	defer m.levelLocks[level].Unlock()
+
 	if level >= maxSSTableLevel {
 		return m.newLevelCompaction(level)
 	}
@@ -107,25 +107,17 @@ func (m *Manager) compactLevel(level int) error {
 	var allBlocks []*block.DataBlock
 	oldFiles := m.getLevelSmallestKFilesByKey(level, len(m.getFilesByLevel(level))-maxFileNumsInLevel(level))
 	if len(oldFiles) == 0 {
-		log.Info(11111111111)
 		return nil
 	}
-	log.Infof("files: %s", oldFiles)
 	for _, file := range oldFiles {
-		sst, ok := m.isFileInMemoryAndReturn(file)
-		if !ok {
-			sst = NewSSTable()
-			if err := sst.DecodeMetaData(file); err != nil {
-				log.Errorf("decode metadata error: %s", err.Error())
-				return err
-			}
-		}
-		if err := sst.DecodeDataBlocks(); err != nil {
-			log.Errorf("decode L0 sstable from file %s error: %s", file, err.Error())
+		sst, err := m.getSSTableMetaInfo(file)
+		if err != nil {
+			log.Errorf("decode sstable meta info from file %s error: %s", file, err.Error())
 			return err
 		}
-		if !ok {
-			sst.Close()
+		if err := sst.DecodeDataBlocks(); err != nil {
+			log.Errorf("decode sstable data info from file %s error: %s", file, err.Error())
+			return err
 		}
 		allBlocks = append(allBlocks, sst.DataBlocks...)
 	}
@@ -150,11 +142,12 @@ func (m *Manager) compactLevel(level int) error {
 		return err
 	}
 	// 加新
-	if err := m.addNewSSTables(newTables, nextLevel); err != nil {
+	if err := m.addNewSSTables(newTables); err != nil {
 		return err
 	}
 	// 若 nextLevel 又超限 => 递归
 	if m.isLevelNeedToBeMerged(nextLevel) {
+		m.startCompaction(nextLevel)
 		return m.compactLevel(nextLevel)
 	}
 
@@ -183,7 +176,7 @@ func (m *Manager) newLevelCompaction(level int) error {
 	if err := m.removeOldSSTables(curFiles, level); err != nil {
 		return err
 	}
-	if err := m.addNewSSTables(newTables, newLevel); err != nil {
+	if err := m.addNewSSTables(newTables); err != nil {
 		return err
 	}
 
@@ -191,19 +184,17 @@ func (m *Manager) newLevelCompaction(level int) error {
 }
 
 func (m *Manager) mergeNextLevelFiles(level int, minK, maxK kv.Key) ([]*block.DataBlock, []string, error) {
+	m.levelLocks[level].Lock()
+	defer m.levelLocks[level].Unlock()
+
 	nextLevelFiles := m.getFilesByLevel(level)
 	var oldLevelFiles []string
 	var newBlocks []*block.DataBlock
 	for _, path := range nextLevelFiles {
-		// 首先判断在内存中有没有
-		var sst *SSTable
-		sst, ok := m.isFileInMemoryAndReturn(path)
-		if !ok {
-			sst = NewSSTable()
-			if err := sst.DecodeMetaData(path); err != nil {
-				log.Errorf("load meta block to memory error: %s", err.Error())
-				return nil, nil, err
-			}
+		sst, err := m.getSSTableMetaInfo(path)
+		if err != nil {
+			log.Errorf("decode sstable meta info from file %s error: %s", path, err.Error())
+			return nil, nil, err
 		}
 		// 判断 overlap
 		if overlapRange(minK, maxK, sst) {
@@ -214,9 +205,6 @@ func (m *Manager) mergeNextLevelFiles(level int, minK, maxK kv.Key) ([]*block.Da
 			}
 			newBlocks = append(newBlocks, sst.DataBlocks...)
 			oldLevelFiles = append(oldLevelFiles, path)
-		}
-		if !ok {
-			sst.Close() // 如果没有在内存中 => 需要关闭文件
 		}
 	}
 
@@ -250,7 +238,7 @@ func (m *Manager) waitLevelCompaction(level int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for m.compacting && m.compactingLevel == level {
+	for m.compacting && m.compactingLevel <= level {
 		m.compactionCond.Wait()
 	}
 }

@@ -92,6 +92,7 @@ func (t *SSTable) DecodeMetaData(filePath string) error {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
+	defer t.Close()
 	t.filePath = filePath
 
 	// 1. 读取 Footer（固定 footerSize 字节）
@@ -120,6 +121,13 @@ func (t *SSTable) DecodeMetaData(filePath string) error {
 
 func (t *SSTable) DecodeDataBlocks() error {
 	var err error
+	t.file, err = os.Open(t.filePath)
+	if err != nil {
+		log.Errorf("open file %s error: %s", t.filePath, err.Error())
+		return fmt.Errorf("open file error: %w", err)
+	}
+	defer t.Close()
+
 	// 读取 DataBlocks
 	t.DataBlocks = make([]*block.DataBlock, len(t.IndexBlock.Indexes))
 	for i, index := range t.IndexBlock.Indexes {
@@ -136,21 +144,13 @@ func (t *SSTable) DecodeDataBlocks() error {
 
 // DecodeFrom 从给定文件路径加载 SSTable 到内存中。
 func (t *SSTable) DecodeFrom(filePath string) error {
-	var err error
-	t.file, err = os.Open(filePath)
-	if err != nil {
-		log.Errorf("open file %s error: %s", filePath, err.Error())
-		return fmt.Errorf("open file error: %w", err)
-	}
-	defer t.Close()
-
-	if err = t.DecodeMetaData(filePath); err != nil {
+	if err := t.DecodeMetaData(filePath); err != nil {
 		log.Errorf("decode metadata error: %s", err.Error())
 		return err
 	}
 
 	// 读取 DataBlocks
-	if err = t.DecodeDataBlocks(); err != nil {
+	if err := t.DecodeDataBlocks(); err != nil {
 		log.Errorf("decode data blocks error: %s", err.Error())
 		return err
 	}
@@ -170,6 +170,7 @@ func (t *SSTable) EncodeTo(filePath string) error {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
+	defer t.Close()
 	t.filePath = filePath
 
 	// 1. DataBlocks：依次写入各个数据块，并记录它们的 Handle
@@ -213,8 +214,16 @@ func (t *SSTable) LoadSpecifiedDataBlock(blockIdx int) *block.DataBlock {
 		return nil
 	}
 
+	var err error
+	t.file, err = os.Open(t.filePath)
+	if err != nil {
+		log.Errorf("open file %s error: %s", t.filePath, err.Error())
+		return nil
+	}
+	defer t.Close()
+
 	dataBlock := block.NewDataBlock()
-	err := dataBlock.DecodeFrom(t.file, t.IndexBlock.Indexes[blockIdx].Handle)
+	err = dataBlock.DecodeFrom(t.file, t.IndexBlock.Indexes[blockIdx].Handle)
 	if err != nil {
 		log.Errorf("decode data block error: %s", err.Error())
 		return nil

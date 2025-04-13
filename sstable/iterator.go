@@ -195,7 +195,6 @@ func CompactAndMergeBlocks(blocks []*block.DataBlock, level int) []*SSTable {
 
 	for h.Len() > 0 {
 		item := heap.Pop(h).(*MergeIterator)
-
 		if !item.pair.Deleted {
 			builder.Add(item.pair)
 		}

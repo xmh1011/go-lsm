@@ -7,54 +7,190 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestKeyValuePairEncodeToAndDecodeFrom(t *testing.T) {
-	tests := []KeyValuePair{
-		{Key: "name", Value: []byte("alice"), Deleted: false},
-		{Key: "empty", Value: []byte{}, Deleted: false},
-		{Key: "", Value: []byte("value-only"), Deleted: false},
-		{Key: "to-delete", Value: []byte("some-value"), Deleted: true},
+func TestKeyValuePair_EncodeDecode(t *testing.T) {
+	tests := []struct {
+		name     string
+		pair     *KeyValuePair
+		wantErr  bool
+		checkVal bool // 是否检查Value是否正确解码
+	}{
+		{
+			name: "normal key-value pair",
+			pair: &KeyValuePair{
+				Key:   "test_key",
+				Value: []byte("test_value"),
+			},
+			wantErr:  false,
+			checkVal: true,
+		},
+		{
+			name: "empty key",
+			pair: &KeyValuePair{
+				Key:   "",
+				Value: []byte("value_only"),
+			},
+			wantErr:  false,
+			checkVal: true,
+		},
+		{
+			name: "empty value",
+			pair: &KeyValuePair{
+				Key:   "key_only",
+				Value: []byte{},
+			},
+			wantErr:  false,
+			checkVal: true,
+		},
+		{
+			name: "deleted value",
+			pair: &KeyValuePair{
+				Key:   "deleted_key",
+				Value: DeletedValue,
+			},
+			wantErr:  false,
+			checkVal: true,
+		},
+		{
+			name: "large key and value",
+			pair: &KeyValuePair{
+				Key:   Key("large_key_" + string(make([]byte, 1000))),
+				Value: make([]byte, 2000),
+			},
+			wantErr:  false,
+			checkVal: false, // 大值不检查具体内容，只检查长度
+		},
 	}
 
-	for _, input := range tests {
-		var buf bytes.Buffer
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 编码
+			buf := &bytes.Buffer{}
+			err := tt.pair.EncodeTo(buf)
 
-		// 使用方法 EncodeTo
-		err := input.EncodeTo(&buf)
-		assert.NoError(t, err, "encoding should not fail")
+			if tt.name == "invalid key length" {
+				// 手动破坏数据来模拟错误
+				buf = bytes.NewBuffer([]byte{0xFF, 0xFF, 0xFF, 0xFF}) // 超大长度前缀
+			}
 
-		// 使用方法 DecodeFrom
-		var decoded KeyValuePair
-		err = decoded.DecodeFrom(&buf)
-		assert.NoError(t, err, "decoding should not fail")
+			if tt.wantErr {
+				assert.Error(t, err, "EncodeTo() should return error")
+				return
+			}
 
-		assert.Equal(t, input.Key, decoded.Key, "keys should match")
-		assert.Equal(t, input.Value, decoded.Value, "values should match")
-		assert.Equal(t, input.Deleted, decoded.Deleted, "deleted flags should match")
+			assert.NoError(t, err, "EncodeTo() should not return error")
+
+			// 解码
+			decoded := &KeyValuePair{}
+			err = decoded.DecodeFrom(buf)
+			assert.NoError(t, err, "DecodeFrom() should not return error")
+
+			// 验证
+			assert.Equal(t, tt.pair.Key, decoded.Key, "Key should match")
+
+			if tt.checkVal {
+				assert.Equal(t, tt.pair.Value, decoded.Value, "Value should match")
+			} else {
+				assert.Equal(t, len(tt.pair.Value), len(decoded.Value), "Value length should match")
+			}
+
+			// 验证IsDeleted方法
+			if tt.name == "deleted value" {
+				assert.True(t, decoded.IsDeleted(), "IsDeleted() should return true for deleted value")
+			} else {
+				assert.False(t, decoded.IsDeleted(), "IsDeleted() should return false for non-deleted value")
+			}
+		})
 	}
 }
 
-func TestKeyEncodeDecode(t *testing.T) {
-	tests := []Key{
-		"hello",
-		"",
-		"你好，世界",
-		"key-with-🚀-unicode",
-		Key(make([]byte, 1024)), // long key
+func TestKeyValuePair_Copy(t *testing.T) {
+	original := &KeyValuePair{
+		Key:   "test_key",
+		Value: []byte("test_value"),
 	}
 
-	for _, original := range tests {
-		var buf bytes.Buffer
+	copied := original.Copy()
 
-		// 编码
-		err := original.EncodeTo(&buf)
-		assert.NoError(t, err, "encoding should not fail for key: %q", original)
+	// 验证拷贝后的对象是否相等
+	assert.Equal(t, original.Key, copied.Key, "Key should be equal")
+	assert.Equal(t, original.Value, copied.Value, "Value should be equal")
 
-		// 解码
-		var decoded Key
-		err = decoded.DecodeFrom(&buf)
-		assert.NoError(t, err, "decoding should not fail for key: %q", original)
+	// 验证修改拷贝不会影响原始对象
+	copied.Key = "modified_key"
+	copied.Value = []byte("modified_value")
 
-		// 比较结果
-		assert.Equal(t, original, decoded, "original and decoded keys should be equal")
+	assert.NotEqual(t, original.Key, copied.Key, "Original key should not be modified")
+	assert.NotEqual(t, original.Value, copied.Value, "Original value should not be modified")
+}
+
+func TestKey_EncodeDecode(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     Key
+		wantErr bool
+	}{
+		{"normal key", "test_key", false},
+		{"empty key", "", false},
+		{"long key", Key(make([]byte, 1000)), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 编码
+			buf := &bytes.Buffer{}
+			n, err := tt.key.EncodeTo(buf)
+			assert.NoError(t, err, "EncodeTo() should not return error")
+			assert.True(t, n > 0, "EncodeTo() should return positive byte count")
+
+			// 解码
+			var decoded Key
+			readBytes, err := decoded.DecodeFrom(buf)
+			assert.NoError(t, err, "DecodeFrom() should not return error")
+			assert.True(t, readBytes > 0, "DecodeFrom() should return positive byte count")
+
+			// 验证
+			assert.Equal(t, tt.key, decoded, "Decoded key should match original")
+		})
+	}
+}
+
+func TestValue_EncodeDecode(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   Value
+		wantErr bool
+	}{
+		{"normal value", []byte("test_value"), false},
+		{"empty value", []byte{}, false},
+		{"deleted value", DeletedValue, false},
+		{"large value", make([]byte, 2000), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 编码
+			buf := &bytes.Buffer{}
+			n, err := tt.value.EncodeTo(buf)
+			assert.NoError(t, err, "EncodeTo() should not return error")
+			assert.True(t, n > 0, "EncodeTo() should return positive byte count")
+
+			// 解码
+			var decoded Value
+			err = decoded.DecodeFrom(buf)
+			assert.NoError(t, err, "DecodeFrom() should not return error")
+
+			// 验证
+			if tt.name != "large value" { // 大值不检查具体内容
+				assert.Equal(t, tt.value, decoded, "Decoded value should match original")
+			} else {
+				assert.Equal(t, len(tt.value), len(decoded), "Decoded value length should match")
+			}
+
+			// 验证IsDeleted方法
+			if tt.name == "deleted value" {
+				pair := &KeyValuePair{Value: decoded}
+				assert.True(t, pair.IsDeleted(), "IsDeleted() should return true for deleted value")
+			}
+		})
 	}
 }

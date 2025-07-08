@@ -21,7 +21,7 @@ func TestWALAppendAndRecover(t *testing.T) {
 	// 准备写入的测试数据
 	records := []kv.KeyValuePair{
 		{Key: "k1", Value: []byte("v1")},
-		{Key: "k2", Value: []byte("v2"), Deleted: true},
+		{Key: "k2", Value: kv.DeletedValue},
 		{Key: "k3", Value: []byte("v3")},
 	}
 

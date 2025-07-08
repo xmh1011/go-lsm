@@ -68,6 +68,10 @@ func (s *SkipList) Search(key kv.Key) (kv.Value, bool) {
 	if curr == nil || curr.Pair.Key != key {
 		return nil, false
 	}
+	if curr.Pair.IsDeleted() {
+		// 如果是逻辑删除的元素，返回 nil
+		return nil, true
+	}
 
 	return curr.Pair.Value, true
 }
@@ -89,7 +93,6 @@ func (s *SkipList) Add(value kv.KeyValuePair) {
 	if next != nil && next.Pair.Key == value.Key {
 		// 更新值，并取消删除标记
 		next.Pair = value
-		next.Pair.Deleted = false
 		return
 	}
 	// 插入新的节点
@@ -129,8 +132,7 @@ func (s *SkipList) Delete(key kv.Key) bool {
 	if target == nil || target.Pair.Key != key {
 		return false
 	}
-	// 逻辑删除标记设置为 true
-	target.Pair.Deleted = true
+	target.Pair.Value = kv.DeletedValue
 	// 更新各层 Forward 指针，直接跳过已删除节点
 	for i := 0; i < s.Level; i++ {
 		if update[i].Forward[i] != target {
@@ -150,7 +152,7 @@ func (s *SkipList) Delete(key kv.Key) bool {
 func (s *SkipList) First() *kv.KeyValuePair {
 	curr := s.Head.Forward[0]
 	for curr != nil {
-		if !curr.Pair.Deleted {
+		if !curr.Pair.IsDeleted() {
 			return &curr.Pair
 		}
 		curr = curr.Forward[0]

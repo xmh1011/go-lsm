@@ -6,62 +6,112 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/xmh1011/go-lsm/kv"
-	"github.com/xmh1011/go-lsm/memtable"
 )
 
-func TestSSTableBuilderBasic(t *testing.T) {
-	// 1. 构造一个 IMemtable，放几个键值对
-	mem := memtable.NewMemtable(1, "")
-	assert.NoError(t, mem.Insert(kv.KeyValuePair{Key: "alpha", Value: []byte("A")}))
-	assert.NoError(t, mem.Insert(kv.KeyValuePair{Key: "beta", Value: []byte("B")}))
-	assert.NoError(t, mem.Insert(kv.KeyValuePair{Key: "gamma", Value: []byte("G")}))
-
-	imem := memtable.NewIMemtable(mem)
-
-	// 2. 调用 BuildSSTableFromIMemtable
-	sst := BuildSSTableFromIMemtable(imem)
-
-	// 3. 验证 DataBlocks
-	assert.NotNil(t, sst)
-	assert.True(t, len(sst.DataBlocks) > 0, "should have at least one data block")
-
-	// 4. 检查第一个 DataBlock 是否包含正确的记录
-	firstBlock := sst.DataBlocks[0]
-	assert.Equal(t, 3, len(firstBlock.Records), "data block should hold 3 pairs")
-
-	assert.Equal(t, "alpha", string(firstBlock.Records[0].Key))
-	assert.Equal(t, kv.Value("A"), firstBlock.Records[0].Value)
-	assert.Equal(t, "beta", string(firstBlock.Records[1].Key))
-	assert.Equal(t, kv.Value("B"), firstBlock.Records[1].Value)
-	assert.Equal(t, "gamma", string(firstBlock.Records[2].Key))
-	assert.Equal(t, kv.Value("G"), firstBlock.Records[2].Value)
-
-	// 5. 验证 FilterBlock 是否已添加了这 3 个 key
-	assert.NotNil(t, sst.FilterBlock)
-	assert.True(t, sst.MayContain("alpha"))
-	assert.True(t, sst.MayContain("beta"))
-	assert.True(t, sst.MayContain("gamma"))
-	assert.False(t, sst.MayContain("delta")) // 不存在
-
-	// 6. 验证 IndexBlock
-	assert.NotNil(t, sst.IndexBlock)
-	assert.Equal(t, 2, len(sst.IndexBlock.Indexes), "only 1 block, so 1 index entry")
-
-	assert.Equal(t, kv.Key("alpha"), sst.IndexBlock.Indexes[0].SeparatorKey, "start key of block is alpha")
-	assert.Equal(t, kv.Key("gamma"), sst.IndexBlock.Indexes[len(sst.IndexBlock.Indexes)-1].SeparatorKey, "end key of block is gamma")
+func TestNewSSTableBuilder(t *testing.T) {
+	builder := NewSSTableBuilder(1)
+	assert.NotNil(t, builder)
+	assert.NotNil(t, builder.table)
+	assert.Equal(t, uint64(0), builder.size)
+	assert.Equal(t, 1, builder.table.level)
 }
 
-func TestSSTableBuilderShouldFlush(t *testing.T) {
-	builder := NewSSTableBuilder(minSSTableLevel)
-	// 在默认实现中, ShouldFlush() 判断 builder.size >= maxSSTableSize
-	// 测试中可模拟 maxSSTableSize = 1024 or 2MB
+func TestBuilder_Add(t *testing.T) {
+	builder := NewSSTableBuilder(0)
 
-	// 构造一个假 large pair
-	largePair := &kv.KeyValuePair{
-		Key:   "big-key",
-		Value: make([]byte, 2*1024*1024), // 2MB
+	// 添加测试数据
+	pair1 := &kv.KeyValuePair{
+		Key:   "key1",
+		Value: kv.Value("value1"),
+	}
+	pair2 := &kv.KeyValuePair{
+		Key:   "key2",
+		Value: kv.Value("value2"),
 	}
 
-	builder.Add(largePair)
-	assert.True(t, builder.ShouldFlush())
+	builder.Add(pair1)
+	builder.Add(pair2)
+
+	// 验证 DataBlock
+	assert.Equal(t, 2, builder.table.DataBlock.Len())
+
+	// 验证 IndexBlock
+	assert.Equal(t, 2, len(builder.table.IndexBlock.Indexes))
+	assert.Equal(t, kv.Key("key1"), builder.table.IndexBlock.Indexes[0].Key)
+	assert.Equal(t, kv.Key("key2"), builder.table.IndexBlock.Indexes[1].Key)
+
+	// 验证 size 计算
+	expectedSize := pair1.EstimateSize() + pair2.EstimateSize()
+	assert.Equal(t, expectedSize, builder.size)
+}
+
+func TestBuilder_ShouldFlush(t *testing.T) {
+	tests := []struct {
+		name     string
+		size     uint64
+		expected bool
+	}{
+		{
+			name:     "not flush",
+			size:     maxSSTableSize - 1,
+			expected: false,
+		},
+		{
+			name:     "exact flush",
+			size:     maxSSTableSize,
+			expected: true,
+		},
+		{
+			name:     "exceed flush",
+			size:     maxSSTableSize + 1,
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewSSTableBuilder(0)
+			builder.size = tt.size
+			assert.Equal(t, tt.expected, builder.ShouldFlush())
+		})
+	}
+}
+
+func TestBuilder_Finalize(t *testing.T) {
+	builder := NewSSTableBuilder(0)
+
+	// 添加一些数据
+	builder.table.DataBlock.Add(kv.Value("value1"))
+	builder.table.DataBlock.Add(kv.Value("value2"))
+	builder.table.IndexBlock.Add("key1", 0)
+	builder.table.IndexBlock.Add("key2", 100)
+
+	builder.Finalize()
+
+	// 验证 Header 是否正确设置
+	assert.NotNil(t, builder.table.Header)
+	assert.Equal(t, kv.Key("key1"), builder.table.Header.MinKey)
+	assert.Equal(t, kv.Key("key2"), builder.table.Header.MaxKey)
+}
+
+func TestBuilder_Build(t *testing.T) {
+	builder := NewSSTableBuilder(0)
+
+	// 添加一些数据
+	pair := &kv.KeyValuePair{
+		Key:   "testKey",
+		Value: kv.Value("testValue"),
+	}
+	builder.Add(pair)
+
+	sstable := builder.Build()
+
+	// 验证返回的 SSTable
+	assert.NotNil(t, sstable)
+	assert.Equal(t, builder.table, sstable)
+
+	// 验证 Finalize 已经被调用
+	assert.NotNil(t, sstable.Header)
+	assert.Equal(t, kv.Key("testKey"), sstable.Header.MinKey)
+	assert.Equal(t, kv.Key("testKey"), sstable.Header.MaxKey)
 }

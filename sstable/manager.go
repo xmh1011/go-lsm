@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -11,11 +12,11 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/memtable"
+	"github.com/xmh1011/go-lsm/sstable/block"
 	"github.com/xmh1011/go-lsm/util"
 )
 
 const (
-	maxSSTableCount = 100
 	minSSTableLevel = 0
 	maxSSTableLevel = 6
 	levelSizeBase   = 2
@@ -29,9 +30,8 @@ func init() {
 	}
 	// 为各层创建对应目录
 	for i := minSSTableLevel; i <= maxSSTableLevel; i++ {
-		err := os.MkdirAll(sstableLevelPath(i, config.GetSSTablePath()), os.ModePerm)
-		if err != nil {
-			log.Errorf("failed to create sstable level %d directory: %v", i, err)
+		if err = os.MkdirAll(sstableLevelPath(i, config.GetSSTablePath()), os.ModePerm); err != nil {
+			log.Errorf("failed to create sstable level %d directory: %s", i, err.Error())
 		}
 	}
 }
@@ -40,222 +40,219 @@ func init() {
 type Manager struct {
 	mu sync.RWMutex
 
-	// metas 保存所有保留在内存中的 SSTable 元信息，按 sst.id 降序排序（最新的在最前）
-	metas []*SSTable
+	// levels 保存各层级的 SSTable 元信息，按层级分组，每层内按 id 降序排序
+	levels [][]*SSTable
 
-	indexMap map[string]int // 用于快速查找 SSTable 的索引
+	// fileIndex 用于快速查找 SSTable 的索引 (文件路径 -> *SSTable)
+	fileIndex map[string]*SSTable
 
-	// diskMap：不在内存中缓存的文件路径（按层级分布）
-	diskMap map[int][]string
-	// totalMap：全部 SSTable 文件路径记录（内存+磁盘）
+	// totalMap 记录所有层级的文件路径
 	totalMap map[int][]string
 
-	// 异步合并等待（Level1 及以上）
-	compactionCond  *sync.Cond // 条件变量，用于等待异步合并完成
-	compacting      bool       // 标识是否正在异步合并
-	compactingLevel int        // 正在合并的层级，0 表示 Level0，-1 表示无
+	// 异步合并控制
+	compactionCond   *sync.Cond
+	compactingLevels map[int]bool // 记录各层级的压缩状态
 }
 
 func NewSSTableManager() *Manager {
 	mgr := &Manager{
-		metas:           make([]*SSTable, 0),
-		diskMap:         make(map[int][]string),
-		totalMap:        make(map[int][]string),
-		indexMap:        make(map[string]int),
-		compacting:      false,
-		compactingLevel: -1,
+		levels:           make([][]*SSTable, maxSSTableLevel+1),
+		fileIndex:        make(map[string]*SSTable),
+		totalMap:         make(map[int][]string),
+		compactingLevels: make(map[int]bool),
 	}
 	mgr.compactionCond = sync.NewCond(&mgr.mu)
 	return mgr
 }
 
-// CreateNewSSTable 将 imem 数据构建为 SSTable，写入到磁盘，然后将其元数据添加到内存中（按照 id 降序保存）。
-func (m *Manager) CreateNewSSTable(imem *memtable.IMemtable) error {
-	sst := BuildSSTableFromIMemtable(imem)
+// CreateNewSSTable 将 imem 数据构建为 SSTable，写入到磁盘，然后将其元数据添加到内存中。
+func (m *Manager) CreateNewSSTable(imem *memtable.IMemTable) error {
+	sst := BuildSSTableFromIMemTable(imem)
 	defer imem.Clean() // 删除 WAL 文件
 
 	// 写入 Level0 文件
 	filePath := sstableFilePath(sst.id, sst.level, config.GetSSTablePath())
-	err := sst.EncodeTo(filePath)
-	if err != nil {
+	if err := sst.EncodeTo(filePath); err != nil {
 		log.Errorf("encode sstable to file %s error: %s", sst.FilePath(), err.Error())
-		return err
+		return fmt.Errorf("encode sstable failed: %w", err)
 	}
-	sst.DataBlocks = nil
 
-	// 添加到内存中（按照 id 降序排序，只保留最新 100 个）
+	// 添加到内存中
 	m.addTable(sst)
-	// 同时记录到 totalMap
-	m.addNewFile(sst.level, filePath)
 
 	// 执行合并逻辑
 	if err := m.Compaction(); err != nil {
 		log.Errorf("compaction error: %s", err.Error())
-		return err
+		return fmt.Errorf("compaction failed: %w", err)
 	}
 
 	return nil
 }
 
-// Search 遍历所有层（从 Level0 到 Level6）查找 key。
-// 如果查询的层 (Level1 及以上)正处于异步合并状态，则等待合并完成后再查询。
+// Search 从低层级向高层级查找 key，同层级按 id 降序查找
+// 返回找到的值或错误，如果未找到返回 (nil, nil)
 func (m *Manager) Search(key kv.Key) ([]byte, error) {
-	// 逐层查找
+	// 1. 从高层级向低层级查找
 	for level := minSSTableLevel; level <= maxSSTableLevel; level++ {
-		// 对 Level1 及以上，如果该层正在异步合并，则等待结束
-		if level >= 1 {
-			m.mu.Lock()
-			for m.compacting && m.compactingLevel <= level {
-				m.compactionCond.Wait()
-			}
-			m.mu.Unlock()
+		// 2. 等待该层级的潜在合并完成（仅对需要等待的层级）
+		if err := m.waitForCompactionIfNeeded(level); err != nil {
+			log.Errorf("wait for compaction at level %d failed: %s", level, err.Error())
+			return nil, fmt.Errorf("wait for compaction failed: %w", err)
 		}
-		files := m.getSortedFilesByLevel(level)
-		n := len(files)
-		for j := 0; j < n; j++ {
-			filePath := files[n-1-j]
-			sst, ok := m.isFileInMemoryAndReturn(filePath)
-			if !ok {
-				sst = NewSSTable()
-				if err := sst.DecodeMetaData(filePath); err != nil {
-					log.Errorf("decode metadata error: %s", err.Error())
-					return nil, err
-				}
-			}
-			val, err := m.SearchFromTable(sst, key)
+
+		// 3. 获取该层级的表切片（已按ID降序排列）
+		tables := m.getLevelTables(level)
+
+		// 4. 在当前层级中按表ID降序查找
+		for _, table := range tables {
+			val, err := m.SearchFromTable(table, key)
 			if err != nil {
-				log.Errorf("search from table error: %s", err.Error())
-				return nil, err
-			}
-			if !ok { // 如果是从磁盘加载的文件，则关闭文件句柄
-				sst.Close()
+				// 记录警告但继续查找其他表
+				log.Warnf("search from table %s failed: %s", table.FilePath(), err.Error())
+				continue
 			}
 			if val != nil {
 				return val, nil
 			}
 		}
 	}
+
+	// 5. 所有层级都未找到
 	return nil, nil
+}
+
+// waitForCompactionIfNeeded 等待指定层级完成合并（如果正在合并）
+// 如果层级正在合并，则阻塞直到合并完成；否则立即返回
+// 返回可能因等待被中断而产生的错误
+func (m *Manager) waitForCompactionIfNeeded(level int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 快速检查：如果该层级没有在合并，直接返回
+	if !m.isCompacting(level) {
+		return nil
+	}
+
+	// 等待合并完成
+	for m.isCompacting(level) {
+		m.compactionCond.Wait()
+	}
+
+	return nil
+}
+
+// isCompacting 辅助方法：检查指定层级是否正在合并
+func (m *Manager) isCompacting(level int) bool {
+	return m.compactingLevels[level]
 }
 
 func (m *Manager) SearchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
 	if !sst.MayContain(key) {
 		return nil, nil
 	}
+
+	// 使用迭代器查找
 	it := NewSSTableIterator(sst)
+	defer it.Close()
+
 	it.Seek(key)
 	if it.Valid() && it.Key() == key {
-		val := it.Value()
-		return val, nil
+		return it.Value()
 	}
-
 	return nil, nil
 }
 
-// Recover 加载所有层中 SSTable 的元数据信息到内存中，并记录在 totalMap 中。
-// 注意：只加载元数据信息，不加载 data block。
+// Recover 加载所有层中 SSTable 的元数据信息到内存中
 func (m *Manager) Recover() error {
 	var maxID uint64
-	for i := minSSTableLevel; i <= maxSSTableLevel; i++ {
-		dir := sstableLevelPath(i, config.GetSSTablePath())
+
+	for level := minSSTableLevel; level <= maxSSTableLevel; level++ {
+		dir := sstableLevelPath(level, config.GetSSTablePath())
 		files, err := os.ReadDir(dir)
 		if err != nil {
-			log.Errorf("failed to read directory %s: %v", dir, err)
-			return err
+			log.Errorf("failed to read directory %s: %s", dir, err.Error())
+			return fmt.Errorf("read directory %s failed: %w", dir, err)
 		}
+
 		if len(files) == 0 {
 			log.Debugf("directory %s is empty, skipping", dir)
 			continue
 		}
+
+		// 按文件名降序排序（假设文件名包含ID）
 		sort.Slice(files, func(i, j int) bool {
-			return util.ExtractID(files[i].Name()) < util.ExtractID(files[j].Name())
+			return util.ExtractID(files[i].Name()) > util.ExtractID(files[j].Name())
 		})
-		latestID := util.ExtractID(files[len(files)-1].Name())
+
+		// 记录最大ID
+		latestID := util.ExtractID(files[0].Name())
 		if latestID > maxID {
 			maxID = latestID
 		}
+
+		// 加载每个文件的元数据
 		for _, file := range files {
 			if file.IsDir() {
 				continue
 			}
+
 			filePath := filepath.Join(dir, file.Name())
-			table := NewRecoverSSTable(i)
+			table := NewRecoverSSTable(level)
 			table.id = util.ExtractID(file.Name())
-			if err := table.DecodeMetaData(filePath); err != nil {
-				log.Errorf("Recover: load meta for file %s error: %s", filePath, err.Error())
-				return err
+
+			if err := table.DecodeFrom(filePath); err != nil {
+				log.Errorf("recover: load meta for file %s error: %s", filePath, err.Error())
+				return fmt.Errorf("load meta for file %s failed: %w", filePath, err)
 			}
-			m.addNewFile(table.level, filePath)
+
 			m.addTable(table)
 		}
 	}
+
 	idGenerator.Add(maxID)
 	return nil
 }
 
-// addTable 将新的 SSTable 元数据插入到内存中，保证 metas 按 sst.id 降序排序，
-// 并只保留前 maxSSTableCount 个文件。
+// addTable 将新的 SSTable 添加到内存中，保持层级和排序（新文件在最前面）
 func (m *Manager) addTable(table *SSTable) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	idx := sort.Search(len(m.metas), func(i int) bool {
-		if m.metas[i].level > table.level {
-			return true
-		}
-		if m.metas[i].level < table.level {
-			return false
-		}
-		return m.metas[i].id < table.id
-	})
+	table.DataBlock = block.NewDataBlock()
+	level := table.level
+	tables := m.levels[level]
 
-	// 插入 metas
-	m.metas = append(m.metas, nil)
-	copy(m.metas[idx+1:], m.metas[idx:])
-	m.metas[idx] = table
+	// 直接插入到列表开头（保持降序）
+	m.levels[level] = append([]*SSTable{table}, tables...)
 
-	// 更新 indexMap（注意：插入后，所有 index >= idx 的都要加1）
-	for path, i := range m.indexMap {
-		if i >= idx {
-			m.indexMap[path] = i + 1
-		}
-	}
-	m.indexMap[table.FilePath()] = idx
+	// 添加到文件索引
+	m.fileIndex[table.FilePath()] = table
 
-	// 超限移除最后一个
-	if len(m.metas) > maxSSTableCount {
-		removed := m.metas[len(m.metas)-1]
-		delete(m.indexMap, removed.FilePath())
-		m.metas = m.metas[:len(m.metas)-1]
-		m.diskMap[removed.level] = append(m.diskMap[removed.level], removed.FilePath())
-		removed.Close()
-	}
+	m.totalMap[level] = append(m.totalMap[level], table.FilePath())
 }
 
-// removeOldSSTables 用于删除指定旧文件的内存和磁盘信息
+// removeOldSSTables 删除旧的 SSTable 文件
 func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, oldPath := range oldFiles {
-		idx, ok := m.indexMap[oldPath]
-		if !ok || idx >= len(m.metas) {
-			continue
-		}
-
-		// 删除 metas[idx]
-		m.metas = append(m.metas[:idx], m.metas[idx+1:]...)
-		delete(m.indexMap, oldPath)
-
-		// 调整 indexMap 中所有大于 idx 的项索引
-		for path, i := range m.indexMap {
-			if i > idx {
-				m.indexMap[path] = i - 1
+		// 从层级中移除
+		if sst, exists := m.fileIndex[oldPath]; exists {
+			tables := m.levels[level]
+			for i, t := range tables {
+				if t.id == sst.id {
+					m.levels[level] = append(tables[:i], tables[i+1:]...)
+					break
+				}
 			}
 		}
+		// 从文件索引中移除
+		delete(m.fileIndex, oldPath)
 
-		m.diskMap[level] = util.RemoveString(m.diskMap[level], oldPath)
+		// 从 totalMap 中移除
 		m.totalMap[level] = util.RemoveString(m.totalMap[level], oldPath)
+
 		// 物理删除文件
 		if err := os.Remove(oldPath); err != nil {
 			log.Errorf("remove file %s error: %s", oldPath, err.Error())
@@ -266,57 +263,39 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 	return nil
 }
 
-// addNewSSTables 用于将新表加入内存和对应 level
-func (m *Manager) addNewSSTables(newTables []*SSTable, level int) error {
+// addNewSSTables 添加新的 SSTable 到指定层级
+func (m *Manager) addNewSSTables(newTables []*SSTable) error {
 	for _, nt := range newTables {
 		// 写入磁盘
 		if err := nt.EncodeTo(nt.FilePath()); err != nil {
 			log.Errorf("encode sstable to file %s error: %s", nt.FilePath(), err.Error())
-			return err
+			return fmt.Errorf("encode sstable failed: %w", err)
 		}
-		nt.DataBlocks = nil
-		// 使用 addTable 插入到内存中，保持 metas 排序与大小限制
+
+		// 添加到内存
 		m.addTable(nt)
-		m.addNewFile(level, nt.FilePath())
 	}
 
 	return nil
 }
 
-func (m *Manager) removeFromDiskMap(filePath string, level int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.diskMap[level] = util.RemoveString(m.diskMap[level], filePath)
-}
-
-func (m *Manager) addNewFile(level int, filePath string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalMap[level] = append(m.totalMap[level], filePath)
-}
-
-// isFileInMemory 遍历内存中 metas 判断某个文件是否存在
-func (m *Manager) isFileInMemory(filePath string) bool {
+// getLevelTables 获取指定层级的所有 SSTable（已排序）
+func (m *Manager) getLevelTables(level int) []*SSTable {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	_, ok := m.indexMap[filePath]
-	return ok
-}
-
-// isFileInMemoryAndReturn 判断并返回内存中对应的 SSTable
-func (m *Manager) isFileInMemoryAndReturn(filePath string) (*SSTable, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	idx, ok := m.indexMap[filePath]
-	if !ok || idx >= len(m.metas) {
-		return nil, false
+	tables := m.levels[level]
+	if tables == nil {
+		return nil
 	}
-	return m.metas[idx], true
+
+	// 返回副本以避免外部修改
+	result := make([]*SSTable, len(tables))
+	copy(result, tables)
+	return result
 }
 
+// getFilesByLevel 获取指定层级的所有文件路径
 func (m *Manager) getFilesByLevel(level int) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -324,29 +303,19 @@ func (m *Manager) getFilesByLevel(level int) []string {
 	return append([]string{}, m.totalMap[level]...)
 }
 
+// isLevelNeedToBeMerged 检查层级是否需要合并
 func (m *Manager) isLevelNeedToBeMerged(level int) bool {
 	return len(m.getFilesByLevel(level)) > maxFileNumsInLevel(level)
 }
 
-// getSortedFilesByLevel 返回磁盘中某层的所有文件，按照 id（时间戳）的大小排序
-func (m *Manager) getSortedFilesByLevel(level int) []string {
-	files := m.getFilesByLevel(level)
-	sort.Slice(files, func(i, j int) bool {
-		return util.ExtractID(files[i]) < util.ExtractID(files[j])
-	})
-
-	return files
+func maxFileNumsInLevel(level int) int {
+	return int(math.Pow(float64(levelSizeBase), float64(level+1)))
 }
 
-// getAll 返回内存中所有 SSTable 元数据的副本
-func (m *Manager) getAll() []*SSTable {
+func (m *Manager) getSSTableByPath(path string) (*SSTable, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	cpy := make([]*SSTable, len(m.metas))
-	copy(cpy, m.metas)
-	return cpy
-}
 
-func maxFileNumsInLevel(level int) int {
-	return int(math.Pow(float64(levelSizeBase), float64(level+2)))
+	sst, ok := m.fileIndex[path]
+	return sst, ok
 }

@@ -9,77 +9,81 @@
 package kv
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 
 	"github.com/xmh1011/go-lsm/log"
-	"github.com/xmh1011/go-lsm/util"
 )
 
 type Key string
 type Value []byte
 
 type KeyValuePair struct {
-	Key     Key
-	Value   Value
-	Deleted bool
+	Key   Key
+	Value Value
 }
+
+const deletedValueStr = "～DELETED～"
+
+var DeletedValue = Value(deletedValueStr)
 
 func (p *KeyValuePair) Copy() *KeyValuePair {
 	return &KeyValuePair{
-		Key:     p.Key,
-		Value:   p.Value,
-		Deleted: p.Deleted,
+		Key:   p.Key,
+		Value: p.Value,
 	}
 }
 
-// EncodeTo 用 uvarint 编码 key/value 长度
+func (p *KeyValuePair) IsDeleted() bool {
+	// 判断 Value 是否为删除标记
+	return p.Value != nil && string(p.Value) == deletedValueStr
+}
+
+// EncodeTo 使用4字节小端编码
 func (p *KeyValuePair) EncodeTo(w io.Writer) error {
-	// 编码 key 长度
-	keyBytes := []byte(p.Key)
-	if err := util.WriteUvarint(w, uint64(len(keyBytes))); err != nil {
+	// 编码 key 长度（4字节小端）
+	keyLen := uint32(len(p.Key))
+	if err := binary.Write(w, binary.LittleEndian, keyLen); err != nil {
 		log.Errorf("write key length failed: %s", err)
 		return fmt.Errorf("encode key length: %w", err)
 	}
-	if _, err := w.Write(keyBytes); err != nil {
+
+	// 编码 key 数据
+	if _, err := w.Write([]byte(p.Key)); err != nil {
 		log.Errorf("write key bytes failed: %s", err)
 		return fmt.Errorf("encode key: %w", err)
 	}
 
-	// 编码 value 长度
-	if err := util.WriteUvarint(w, uint64(len(p.Value))); err != nil {
+	// 编码 value 长度（4字节小端）
+	valLen := uint32(len(p.Value))
+	if err := binary.Write(w, binary.LittleEndian, valLen); err != nil {
 		log.Errorf("write value length failed: %s", err)
 		return fmt.Errorf("encode value length: %w", err)
 	}
+
+	// 编码 value 数据
 	if _, err := w.Write(p.Value); err != nil {
 		log.Errorf("write value bytes failed: %s", err)
 		return fmt.Errorf("encode value: %w", err)
 	}
 
-	// 写 deleted 字节
-	var deletedByte byte
-	if p.Deleted {
-		deletedByte = 1
-	}
-	if _, err := w.Write([]byte{deletedByte}); err != nil {
-		log.Errorf("write deleted byte failed: %s", err)
-		return fmt.Errorf("encode deleted: %w", err)
-	}
-
 	return nil
 }
 
-// DecodeFrom 从 reader 解码 KeyValuePair（uvarint + data）
+// DecodeFrom 使用4字节小端解码
 func (p *KeyValuePair) DecodeFrom(r io.Reader) error {
-	// 解码 key 长度
-	keyLen, err := util.ReadUvarint(r)
-	if err != nil {
+	// 解码 key 长度（4字节小端）
+	var keyLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &keyLen); err != nil {
 		log.Errorf("read key length failed: %s", err)
 		return fmt.Errorf("decode key length: %w", err)
 	}
 	if keyLen > 1<<20 {
 		return fmt.Errorf("invalid key length: %d", keyLen)
 	}
+
+	// 解码 key 数据
 	key := make([]byte, keyLen)
 	if _, err := io.ReadFull(r, key); err != nil {
 		log.Errorf("read key failed: %s", err)
@@ -87,15 +91,17 @@ func (p *KeyValuePair) DecodeFrom(r io.Reader) error {
 	}
 	p.Key = Key(key)
 
-	// 解码 value 长度
-	valLen, err := util.ReadUvarint(r)
-	if err != nil {
+	// 解码 value 长度（4字节小端）
+	var valLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &valLen); err != nil {
 		log.Errorf("read value length failed: %s", err)
 		return fmt.Errorf("decode value length: %w", err)
 	}
 	if valLen > 1<<30 {
 		return fmt.Errorf("invalid value length: %d", valLen)
 	}
+
+	// 解码 value 数据
 	val := make([]byte, valLen)
 	if _, err := io.ReadFull(r, val); err != nil {
 		log.Errorf("read value failed: %s", err)
@@ -103,53 +109,90 @@ func (p *KeyValuePair) DecodeFrom(r io.Reader) error {
 	}
 	p.Value = val
 
-	// 读取 deleted 字节
-	var deleted [1]byte
-	if _, err := io.ReadFull(r, deleted[:]); err != nil {
-		log.Errorf("read deleted byte failed: %s", err)
-		return fmt.Errorf("decode deleted: %w", err)
-	}
-	p.Deleted = deleted[0] == 1
-
 	return nil
 }
 
-// EstimateSize 估算 KeyValuePair 的大小
-// UVarint 最多 5 bytes
-// deleted 1 byte
+// EstimateSize 估算编码后大小
 func (p *KeyValuePair) EstimateSize() uint64 {
-	return uint64(1 + 5 + len(p.Key) + 5 + len(p.Value))
+	// 4字节 key 长度 + key 数据长度 + 4字节 value 长度 + value 数据长度 + 8字节 value offset
+	return 4 + uint64(len(p.Key)) + 4 + uint64(len(p.Value)) + 8
 }
 
-// DecodeFrom 解码 Key（使用 uvarint 编码长度）
-func (k *Key) DecodeFrom(r io.Reader) error {
-	keyLen, err := util.ReadUvarint(r)
-	if err != nil {
-		log.Errorf("read key length failed: %s", err)
-		return fmt.Errorf("decode key length: %w", err)
+// DecodeFrom 从 io.Reader 解码 Key（小端存储 + 4字节长度前缀）
+func (k *Key) DecodeFrom(r io.Reader) (int64, error) {
+	var keyLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &keyLen); err != nil {
+		log.Errorf("read key keyLen failed: %s", err)
+		return 0, fmt.Errorf("decode key keyLen: %w", err)
 	}
-	if keyLen > 1<<20 {
-		return fmt.Errorf("invalid key length: %d", keyLen)
-	}
-	data := make([]byte, keyLen)
-	if _, err := io.ReadFull(r, data); err != nil {
+
+	keyBytes := make([]byte, keyLen)
+	if _, err := io.ReadFull(r, keyBytes); err != nil {
 		log.Errorf("read key bytes failed: %s", err)
-		return fmt.Errorf("decode key: %w", err)
+		return 0, fmt.Errorf("decode key bytes: %w", err)
 	}
-	*k = Key(data)
-	return nil
+
+	*k = Key(keyBytes)
+	return int64(4 + len(keyBytes)), nil
 }
 
-// EncodeTo 编码 Key 长度 + 内容（使用 uvarint 编码）
-func (k *Key) EncodeTo(w io.Writer) error {
-	keyBytes := []byte(*k)
-	if err := util.WriteUvarint(w, uint64(len(keyBytes))); err != nil {
-		log.Errorf("write key length failed: %s", err)
-		return fmt.Errorf("encode key length: %w", err)
+// EncodeTo 编码 Key（小端存储 + 4字节长度前缀），并返回写入的字节数
+func (k *Key) EncodeTo(w io.Writer) (int64, error) {
+	var totalWritten int64
+
+	// 1. 写入 Key 长度（4字节小端）
+	keyLen := uint32(len(*k))
+	if err := binary.Write(w, binary.LittleEndian, keyLen); err != nil {
+		log.Errorf("write key length failed: %s", err.Error())
+		return totalWritten, fmt.Errorf("encode key length: %w", err)
 	}
-	if _, err := w.Write(keyBytes); err != nil {
-		log.Errorf("write key bytes failed: %s", err)
-		return fmt.Errorf("encode key bytes: %w", err)
+	totalWritten += 4
+
+	// 2. 写入 Key 数据
+	n, err := w.Write([]byte(*k))
+	if err != nil {
+		log.Errorf("write key bytes failed: %s", err.Error())
+		return totalWritten, fmt.Errorf("encode key bytes: %w", err)
 	}
+	totalWritten += int64(n)
+
+	return totalWritten, nil
+}
+
+// EncodeTo 编码 Value（小端存储 + 4字节长度前缀）
+func (v *Value) EncodeTo(w io.Writer) (int64, error) {
+	valLen := uint32(len(*v))
+	if err := binary.Write(w, binary.LittleEndian, valLen); err != nil {
+		log.Errorf("write value length failed: %s", err)
+		return 0, fmt.Errorf("encode value length: %w", err)
+	}
+
+	if _, err := w.Write(*v); err != nil {
+		log.Errorf("write value bytes failed: %s", err)
+		return 0, fmt.Errorf("encode value: %w", err)
+	}
+
+	return int64(4 + valLen), nil // 返回编码后的总字节数（4字节长度 + value数据长度）
+}
+
+// DecodeFrom 从 io.Reader 解码 Value（小端存储 + 4字节长度前缀）
+func (v *Value) DecodeFrom(r io.Reader) error {
+	var valLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &valLen); err != nil {
+		log.Errorf("read value length failed: %s", err)
+		return fmt.Errorf("decode value length: %w", err)
+	}
+
+	if valLen > 1<<30 { // 1GB
+		return fmt.Errorf("invalid value length: %d", valLen)
+	}
+
+	val := make([]byte, valLen)
+	if _, err := io.ReadFull(r, val); err != nil {
+		log.Errorf("read value bytes failed: %s", err)
+		return fmt.Errorf("decode value: %w", err)
+	}
+
+	*v = val
 	return nil
 }

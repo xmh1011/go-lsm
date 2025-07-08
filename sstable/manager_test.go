@@ -7,62 +7,93 @@ import (
 
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/sstable/block"
+	"github.com/xmh1011/go-lsm/sstable/bloom"
 )
 
-// TestSSTableManagerSearch 重写单元测试，确保恢复时将文件路径同时添加到 diskMap 和 totalMap，
-// 并验证 Search 能正确返回预期值，同时 SSTable 被加载到内存缓存中。
 func TestSSTableManagerSearch(t *testing.T) {
-	// 1. 创建临时目录
+	// 1. 创建临时目录和测试数据
 	dir := t.TempDir()
 
-	// 2. 构造一个 SSTable 并写入数据
+	// 2. 创建并初始化SSTable
 	sst := NewSSTable()
 	sst.id = 1
-	// 设置文件路径，确保文件存储在临时目录下
+	sst.level = 0
 	sst.filePath = sstableFilePath(sst.id, sst.level, dir)
-	// 构造 DataBlocks，模拟 SSTable 中的数据
-	sst.DataBlocks = []*block.DataBlock{
+
+	// 设置测试数据
+	testRecords := []*kv.KeyValuePair{
+		{Key: "key1", Value: []byte("value1")},
+		{Key: "key2", Value: []byte("value2")},
+		{Key: "key3", Value: []byte("value3")},
+	}
+
+	// 创建数据块和过滤器
+	sst.FilterBlock = bloom.NewBloomFilter(1024, 3)
+	for _, record := range testRecords {
+		sst.DataBlock.Add(record.Value)
+		sst.FilterBlock.Add([]byte(record.Key))
+		sst.IndexBlock.Add(record.Key, 0)
+	}
+	sst.Header = block.NewHeader(testRecords[0].Key, testRecords[len(testRecords)-1].Key)
+
+	// 3. 编码并写入文件
+	err := sst.EncodeTo(sst.filePath)
+	assert.NoError(t, err)
+	assert.FileExists(t, sst.filePath)
+
+	// 4. 初始化SSTableManager
+	manager := NewSSTableManager()
+	err = manager.addNewSSTables([]*SSTable{sst})
+	assert.NoError(t, err)
+
+	// 5. 测试Search功能
+	tests := []struct {
+		name     string
+		key      kv.Key
+		expected []byte
+		wantErr  bool
+	}{
 		{
-			Records: []*kv.KeyValuePair{
-				{Key: "a", Value: []byte("apple")},
-				{Key: "b", Value: []byte("banana")},
-				{Key: "c", Value: []byte("cherry")},
-			},
+			name:     "existing key in first block",
+			key:      "key1",
+			expected: []byte("value1"),
+			wantErr:  false,
+		},
+		{
+			name:     "existing key in middle",
+			key:      "key2",
+			expected: []byte("value2"),
+			wantErr:  false,
+		},
+		{
+			name:     "existing key in last position",
+			key:      "key3",
+			expected: []byte("value3"),
+			wantErr:  false,
+		},
+		{
+			name:     "non-existing key",
+			key:      "key4",
+			expected: nil,
+			wantErr:  false,
 		},
 	}
 
-	// 构建 FilterBlock，保证查询时布隆过滤器能正常判断
-	sst.FilterBlock = block.NewFilterBlock(1024, 3)
-	for _, blk := range sst.DataBlocks {
-		for _, pair := range blk.Records {
-			sst.FilterBlock.Filter.Add([]byte(pair.Key))
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			val, err := manager.Search(tt.key)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, val)
+		})
 	}
 
-	// 3. 写入 SSTable 到文件系统
-	file := sst.FilePath()
-	err := sst.EncodeTo(file)
-	assert.NoError(t, err)
-	assert.FileExists(t, file)
-
-	// 4. 创建一个 Manager 实例，并把生成的文件路径同时记录到 diskMap 和 totalMap 中，
-	// 模拟从磁盘加载的情况（未缓存状态）。
-	manager := NewSSTableManager()
-	manager.diskMap[0] = []string{file}
-	manager.totalMap[0] = []string{file}
-
-	// 5. 执行 Search 测试：查询 key "b"，预期返回 "banana"
-	val, err := manager.Search("b")
-	assert.NoError(t, err)
-	assert.Equal(t, []byte("banana"), val)
-
-	// 6. 再次查询 key "a"，此时应命中缓存，预期返回 "apple"
-	val, err = manager.Search("a")
-	assert.NoError(t, err)
-	assert.Equal(t, []byte("apple"), val)
-
-	// 7. 查询不存在的 key "z"，预期返回 nil
-	val, err = manager.Search("z")
+	// 6. 测试布隆过滤器优化 - 查询明显不存在的key
+	val, err := manager.Search("definitely_not_exist_key")
 	assert.NoError(t, err)
 	assert.Nil(t, val)
 }

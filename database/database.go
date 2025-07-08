@@ -16,7 +16,7 @@ type Database struct {
 func Open(name string) *Database {
 	return &Database{
 		name:      name,
-		MemTables: memtable.NewMemtableManager(),
+		MemTables: memtable.NewMemTableManager(),
 		SSTables:  sstable.NewSSTableManager(),
 	}
 }
@@ -59,7 +59,7 @@ func (d *Database) Delete(key string) error {
 }
 
 func (d *Database) Recover() error {
-	// 1. 恢复内存中的 Memtable
+	// 1. 恢复内存中的 MemTable
 	if err := d.MemTables.Recover(); err != nil {
 		log.Errorf("recover memtable error: %s", err.Error())
 		return err
@@ -74,7 +74,7 @@ func (d *Database) Recover() error {
 	return nil
 }
 
-func (d *Database) createNewSSTable(imem *memtable.IMemtable) {
+func (d *Database) createNewSSTable(imem *memtable.IMemTable) {
 	if imem == nil {
 		return
 	}

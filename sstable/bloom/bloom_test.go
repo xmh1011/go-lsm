@@ -10,52 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// This implementation of Bloom filters is _not_
-// safe for concurrent use. Uncomment the following
-// method and run go test -race
-//
-// func TestConcurrent(t *testing.T) {
-//	gmp := runtime.GOMAXPROCS(2)
-//	defer runtime.GOMAXPROCS(gmp)
-//
-//	f := NewBloomFilter(1000, 4)
-//	n1 := []byte("Bess")
-//	n2 := []byte("Jane")
-//	f.Add(n1)
-//	f.Add(n2)
-//
-//	var wg sync.WaitGroup
-//	const try = 1000
-//	var err1, err2 error
-//
-//	wg.Add(1)
-//	go func() {
-//		defer wg.Done()
-//		for i := 0; i < try; i++ {
-//			if !f.Test(n1) {
-//				err1 = fmt.Errorf("%v should be in", n1)
-//				break
-//			}
-//		}
-//	}()
-//
-//	wg.Add(1)
-//	go func() {
-//		defer wg.Done()
-//		for i := 0; i < try; i++ {
-//			if !f.Test(n2) {
-//				err2 = fmt.Errorf("%v should be in", n2)
-//				break
-//			}
-//		}
-//	}()
-//
-//	wg.Wait()
-//
-//	assert.NoError(t, err1)
-//	assert.NoError(t, err2)
-//}
-
 func TestBasic(t *testing.T) {
 	f := NewBloomFilter(1000, 4)
 	n1 := []byte("Bess")
@@ -479,13 +433,12 @@ func TestFilterEncodeDecode(t *testing.T) {
 
 	// 2. EncodeTo 序列化
 	var buf bytes.Buffer
-	length, err := original.EncodeTo(&buf)
+	err := original.EncodeTo(&buf)
 	assert.NoError(t, err)
-	assert.True(t, length > 0, "filter block length should be positive")
 
 	// 3. DecodeFrom 反序列化
 	decoded := &Filter{}
-	err = decoded.DecodeFrom(&buf, length)
+	err = decoded.DecodeFrom(&buf)
 	assert.NoError(t, err)
 
 	// 4. 测试结果是否一致

@@ -18,40 +18,23 @@ func NewSSTableBuilder(level int) *Builder {
 	}
 }
 
-// BuildSSTableFromIMemtable 构建一个完整的 SSTable（包含 DataBlock、IndexBlock、FilterBlock）
-func BuildSSTableFromIMemtable(imem *memtable.IMemtable) *SSTable {
+// BuildSSTableFromIMemTable 构建一个完整的 SSTable（包含 DataBlock、IndexBlock、FilterBlock）
+func BuildSSTableFromIMemTable(imem *memtable.IMemTable) *SSTable {
 	builder := NewSSTableBuilder(minSSTableLevel)
 
 	// 遍历所有 key-value 对
 	imem.RangeScan(func(pair *kv.KeyValuePair) {
 		builder.Add(pair)
-		builder.table.FilterBlock.Filter.Add([]byte(pair.Key))
 	})
 
 	return builder.Build()
 }
 
-// Add 向当前 DataBlock 添加记录；若当前 Block 满了，则 flush。
+// Add 向当前 DataBlock（[]kv.Value）添加记录；若当前 Block 满了，则创建新 Block。
 func (b *Builder) Add(pair *kv.KeyValuePair) {
-	var current *block.DataBlock
-
-	// 如果没有 Block，或者最后一个 Block 满了，则新建
-	if len(b.table.DataBlocks) == 0 {
-		current = block.NewDataBlock()
-		b.table.DataBlocks = append(b.table.DataBlocks, current)
-	} else {
-		last := b.table.DataBlocks[len(b.table.DataBlocks)-1]
-		if last.CanInsert(pair) {
-			current = last
-		} else {
-			current = block.NewDataBlock()
-			b.table.DataBlocks = append(b.table.DataBlocks, current)
-		}
-	}
-
-	// 添加记录
-	current.AddRecord(pair)
-	b.table.FilterBlock.Add(pair.Key)
+	b.table.DataBlock.Add(pair.Value)
+	b.table.IndexBlock.Add(pair.Key, 0)
+	b.table.FilterBlock.Add([]byte(pair.Key))
 	b.size += pair.EstimateSize()
 }
 
@@ -60,23 +43,14 @@ func (b *Builder) ShouldFlush() bool {
 	return b.size >= maxSSTableSize
 }
 
-// Finalize 填充 FilterBlock 和 IndexBlock
+// Finalize 填充 IndexBlock 和 Header
 func (b *Builder) Finalize() {
-	for i, blk := range b.table.DataBlocks {
-		if len(blk.Records) == 0 {
-			continue
+	// 初始化 Header（假设 Header 包含 MinKey 和 MaxKey）
+	if b.table.DataBlock.Len() > 0 {
+		b.table.Header = &block.Header{
+			MaxKey: b.table.IndexBlock.Indexes[b.table.DataBlock.Len()-1].Key,
+			MinKey: b.table.IndexBlock.Indexes[0].Key,
 		}
-		if i == 0 {
-			entry := block.NewIndexEntry()
-			entry.SeparatorKey = blk.Records[0].Key
-			b.table.IndexBlock.Indexes = append(b.table.IndexBlock.Indexes, entry)
-		}
-
-		// 构建 IndexEntry
-		entry := block.NewIndexEntry()
-		entry.SeparatorKey = blk.Records[len(blk.Records)-1].Key
-		// Handle 由 EncodeTo 时填充
-		b.table.IndexBlock.Indexes = append(b.table.IndexBlock.Indexes, entry)
 	}
 }
 

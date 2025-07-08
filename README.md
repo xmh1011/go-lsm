@@ -24,26 +24,17 @@ You can refer to [description](./docs/description.md)
   - KV structure
   - SkipList
 - Day 2
-  - Memtable and IMemtable
+  - MemTable and IMemTable
   - WAL
 - Day 3 - Day 6
   - SSTable
-  - Memtable Builder
+  - MemTable Builder
   - SSTable Manager
 - Day 7
   - Compaction
   - Test
 
 ![./docs/pics/log.jpg](./docs/pics/log.jpg)
-
-## Article
-
-> These docs are derived from and modified based on [reading-source-code-of-leveldb-1.23](https://github.com/SmartKeyerror/reading-source-code-of-leveldb-1.23) under BSD-3-Clause license.
-
-- [KV](kv/README.md)
-- [Memtable](memtable/README.md)
-- [WAL](wal/README.md)
-- [SSTable](sstable/README.md)
 
 ## Benchmark
 
@@ -55,12 +46,12 @@ make bench
 goos: darwin
 goarch: arm64
 pkg: github.com/xmh1011/go-lsm/database
-cpu: Apple M1 Pro
-BenchmarkPut-8           2679295             27066 ns/op
-BenchmarkGet-8           135709042           245.1 ns/op
-BenchmarkDelete-8        1000000             34749 ns/op
+cpu: Apple M3
+BenchmarkPut-8           2943309             30952 ns/op
+BenchmarkGet-8           171483172           206.1 ns/op
+BenchmarkDelete-8        1817216             21721 ns/op
 PASS
-ok      github.com/xmh1011/go-lsm/database      194.531s
+ok      github.com/xmh1011/go-lsm/database      227.578s
 ```
 
 ```bash
@@ -72,13 +63,13 @@ make benchmark
  测试目录   : /Users/xiaominghao/code/go-lsm/data
  循环轮数   : 5
  写入总数   : 5000000
- 写入耗时   : 45.257768191s (平均)
- 写 ops/s  : 22095.65 (平均)
- 写 ns/op  : 45257.77 (平均)
+ 写入耗时   : 1m0.836696858s (平均)
+ 写 ops/s  : 16437.45 (平均)
+ 写 ns/op  : 60836.70 (平均)
  读取总数   : 5000
- 读取耗时   : 26.767503675s (平均)
- 读 ops/s  : 37.36 (平均)
- 读 ns/op  : 26767503.68 (平均)
+ 读取耗时   : 77.244483ms (平均)
+ 读 ops/s  : 12945.91 (平均)
+ 读 ns/op  : 77244.48 (平均)
 ==============================================
 ```
 

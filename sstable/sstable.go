@@ -1,7 +1,9 @@
 package sstable
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -10,6 +12,7 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 	"github.com/xmh1011/go-lsm/sstable/block"
+	"github.com/xmh1011/go-lsm/sstable/bloom"
 )
 
 const (
@@ -21,52 +24,50 @@ const (
 var idGenerator atomic.Uint64
 
 // SSTable is an in-memory representation of the file on disk. An SSTable contains the data sorted by key.
-// SSTables can be created by flushing an immutable Memtable or by merging SSTables (/compaction).
+// SSTables can be created by flushing an immutable MemTable or by merging SSTables (/compaction).
 type SSTable struct {
 	id uint64
-
-	file *os.File
 
 	level int
 
 	filePath string
 
-	// DataBlocks 由多个 DataRecord 组成，用于存储 key/value 记录。
-	// 在 SSTable 中，一个 DataBlocks 是一段连续写入的不可变数据区。
-	DataBlocks []*block.DataBlock
+	// Header 记录 SSTable 的元数据信息，包括最小 Key、最大 Key 等
+	Header *block.Header
+
+	// FilterBlock 合并了结构图中的 Filter 和 MetaIndexBlock
+	// 记录 Filter 的相关信息
+	FilterBlock *bloom.Filter
 
 	// IndexBlock 是数据块的索引部分，记录每个 Data Blcok 的起始位置、大小和最大 Key 值
 	IndexBlock *block.IndexBlock // 按 key 顺序排列的索引项
 
-	// FilterBlock 合并了结构图中的 Filter 和 MetaIndexBlock
-	// 记录 Filter 的相关信息
-	FilterBlock *block.FilterBlock
+	// DataBlock 是 SSTable 的数据块部分，包含实际的value数据。
+	DataBlock *block.DataBlock
 
-	// Footer 指向索引的索引，固定长度
-	Footer block.Footer
-
-	// references 是 SSTable 的引用计数，用于管理 SSTable 的生命周期
-	// 通常我们在 compaction 之后 会尝试移除旧的 SSTable。
-	// 此时，需要检查它是否仍然被其他地方使用。如果还有引用（ref > 0），就不能删除。
-	// TODO: 未实现
-	references atomic.Int64
+	// Footer 是 SSTable 的尾部信息，包含了 IndexBlock 的位置等元数据
+	Footer *block.Footer
 }
 
 func NewSSTable() *SSTable {
 	return &SSTable{
 		id:          idGenerator.Add(1),
-		DataBlocks:  make([]*block.DataBlock, 0),
 		IndexBlock:  block.NewIndexBlock(),
-		FilterBlock: block.NewFilterBlock(0, 0),
+		FilterBlock: bloom.DefaultBloomFilter(),
+		Footer:      block.NewFooter(),
+		Header:      block.NewHeader("", ""),
+		DataBlock:   block.NewDataBlock(),
 	}
 }
 
 func NewRecoverSSTable(level int) *SSTable {
 	return &SSTable{
 		level:       level,
-		DataBlocks:  make([]*block.DataBlock, 0),
 		IndexBlock:  block.NewIndexBlock(),
-		FilterBlock: block.NewFilterBlock(0, 0),
+		FilterBlock: bloom.DefaultBloomFilter(),
+		Footer:      block.NewFooter(),
+		Header:      block.NewHeader("", ""),
+		DataBlock:   block.NewDataBlock(),
 	}
 }
 
@@ -77,74 +78,40 @@ func NewSSTableWithLevel(level int) *SSTable {
 	return table
 }
 
-func (t *SSTable) DecodeMetaData(filePath string) error {
-	var err error
-	t.file, err = os.Open(filePath)
+// DecodeFrom 从给定文件路径加载 SSTable 到内存中。不加载 DataBlock 的内容。
+func (t *SSTable) DecodeFrom(filePath string) error {
+	file, err := os.Open(filePath)
 	if err != nil {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
+	defer file.Close()
 	t.filePath = filePath
 
-	// 1. 读取 Footer（固定 footerSize 字节）
-	err = t.Footer.DecodeFrom(t.file)
-	if err != nil {
-		log.Errorf("decode footer error: %s", err.Error())
-		return fmt.Errorf("decode footer error: %w", err)
+	if err = t.Header.DecodeFrom(file); err != nil {
+		log.Errorf("decode Header from file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("decode Header failed: %w", err)
 	}
 
-	// 2. 根据 Footer 读取 IndexBlock
-	err = t.IndexBlock.DecodeFrom(t.file, t.Footer.IndexHandle)
-	if err != nil {
-		log.Errorf("decode index block error: %s", err.Error())
-		return fmt.Errorf("decode index block error: %w", err)
+	if err = t.FilterBlock.DecodeFrom(file); err != nil {
+		log.Errorf("decode FilterBlock from file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("decode FilterBlock failed: %w", err)
 	}
 
-	// 3. 根据 Footer 读取 FilterBlock
-	err = t.FilterBlock.DecodeFrom(t.file, t.Footer.MetaIndexHandle)
-	if err != nil {
-		log.Errorf("decode meta index block error: %s", err.Error())
-		return fmt.Errorf("decode meta index block error: %w", err)
+	// 定位到文件末尾，读取 Footer
+	if err = t.DecodeFooterFrom(file); err != nil {
+		log.Errorf("decode Footer from file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("decode Footer failed: %w", err)
 	}
 
-	return nil
-}
-
-func (t *SSTable) DecodeDataBlocks() error {
-	var err error
-	// 读取 DataBlocks
-	t.DataBlocks = make([]*block.DataBlock, len(t.IndexBlock.Indexes))
-	for i, index := range t.IndexBlock.Indexes {
-		t.DataBlocks[i] = block.NewDataBlock()
-		err = t.DataBlocks[i].DecodeFrom(t.file, index.Handle)
-		if err != nil {
-			log.Errorf("decode data block error: %s", err.Error())
-			return fmt.Errorf("decode data block error: %w", err)
-		}
+	// 根据 Footer 定位 IndexBlock
+	if _, err = file.Seek(t.Footer.IndexHandle.Offset, io.SeekStart); err != nil {
+		log.Errorf("seek to index block position in file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("seek to index block position failed: %w", err)
 	}
-
-	return nil
-}
-
-// DecodeFrom 从给定文件路径加载 SSTable 到内存中。
-func (t *SSTable) DecodeFrom(filePath string) error {
-	var err error
-	t.file, err = os.Open(filePath)
-	if err != nil {
-		log.Errorf("open file %s error: %s", filePath, err.Error())
-		return fmt.Errorf("open file error: %w", err)
-	}
-	defer t.Close()
-
-	if err = t.DecodeMetaData(filePath); err != nil {
-		log.Errorf("decode metadata error: %s", err.Error())
-		return err
-	}
-
-	// 读取 DataBlocks
-	if err = t.DecodeDataBlocks(); err != nil {
-		log.Errorf("decode data blocks error: %s", err.Error())
-		return err
+	if err = t.IndexBlock.DecodeFrom(file, t.Footer.IndexHandle.Size); err != nil {
+		log.Errorf("decode IndexBlock from file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("decode IndexBlock failed: %w", err)
 	}
 
 	return nil
@@ -152,125 +119,178 @@ func (t *SSTable) DecodeFrom(filePath string) error {
 
 // EncodeTo 将 SSTable 的各个部分（DataBlocks、IndexBlock、FilterBlock、Footer）依次写入文件中
 func (t *SSTable) EncodeTo(filePath string) error {
-	var err error
-	if err = os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		log.Errorf("create directory %s error: %s", filepath.Dir(filePath), err.Error())
 		return fmt.Errorf("create directory failed: %w", err)
 	}
-	t.file, err = os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
+	defer file.Close()
 	t.filePath = filePath
 
-	// 清空 IndexBlock 信息
-	t.IndexBlock = block.NewIndexBlock()
-	t.IndexBlock.Indexes = make([]*block.IndexEntry, len(t.DataBlocks))
-
-	// 1. DataBlocks：依次写入各个数据块，并记录它们的 Handle 到 IndexBlock.Indexes
-	for i, dataBlock := range t.DataBlocks {
-		// 编码写入当前 DataBlock
-		t.IndexBlock.Indexes[i] = block.NewIndexEntry()
-		t.IndexBlock.Indexes[i].Handle, err = dataBlock.EncodeTo(t.file)
-		if err != nil {
-			log.Errorf("encode DataBlock failed: %s", err.Error())
-			return fmt.Errorf("encode DataBlock failed: %w", err)
-		}
-		// 计算当前 DataBlock 的分割键
-		if len(dataBlock.Records) > 0 {
-			if i == 0 {
-				t.IndexBlock.StartKey = dataBlock.Records[0].Key
-			}
-			t.IndexBlock.Indexes[i].SeparatorKey = dataBlock.Records[len(dataBlock.Records)-1].Key
-		}
+	if err = t.Header.EncodeTo(file); err != nil {
+		log.Errorf("encode Header to file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("encode Header failed: %w", err)
 	}
 
-	// 2. IndexBlock：写入数据块的索引信息，并记录其 Handle。
-	t.Footer.IndexHandle, err = t.IndexBlock.EncodeTo(t.file)
-	if err != nil {
-		log.Errorf("encode IndexBlock failed: %s", err.Error())
-		return fmt.Errorf("encode IndexBlock failed: %w", err)
-	}
-
-	// 3. FilterBlock：写入过滤器数据，并记录其 Handle。
-	t.Footer.MetaIndexHandle, err = t.FilterBlock.EncodeTo(t.file)
-	if err != nil {
-		log.Errorf("encode FilterBlock failed: %s", err.Error())
+	if err = t.FilterBlock.EncodeTo(file); err != nil {
+		log.Errorf("encode FilterBlock to file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("encode FilterBlock failed: %w", err)
 	}
 
-	// 4. Footer：写入 Footer，同时将 IndexBlock 和 FilterBlock 的 Handle 写入 Footer 中。
-	err = t.Footer.EncodeTo(t.file)
-	if err != nil {
-		log.Errorf("encode Footer failed: %s", err.Error())
+	// 记录 DataBlock 的起始偏移量和大小
+	if t.Footer.DataHandle.Offset, err = file.Seek(0, io.SeekCurrent); err != nil {
+		log.Errorf("seek to index block position error: %s", err.Error())
+		return fmt.Errorf("seek to index block position failed: %w", err)
+	}
+	for i, value := range t.DataBlock.Entries {
+		if t.IndexBlock.Indexes[i].Offset, err = file.Seek(0, io.SeekCurrent); err != nil {
+			log.Errorf("seek to current position error: %s", err.Error())
+			return fmt.Errorf("seek to current position failed: %w", err)
+		}
+		size, err := value.EncodeTo(file)
+		if err != nil {
+			log.Errorf("encode DataBlock to file %s error: %s", filePath, err.Error())
+			return fmt.Errorf("encode DataBlock failed: %w", err)
+		}
+		t.Footer.DataHandle.Size += size
+	}
+
+	// 记录 IndexBlock 的起始偏移量和大小
+	if t.Footer.IndexHandle.Offset, err = file.Seek(0, io.SeekCurrent); err != nil {
+		log.Errorf("seek to index block position error: %s", err.Error())
+		return fmt.Errorf("seek to index block position failed: %w", err)
+	}
+	if t.Footer.IndexHandle.Size, err = t.IndexBlock.Encode(file); err != nil {
+		log.Errorf("encode IndexBlock to file %s error: %s", filePath, err.Error())
+		return fmt.Errorf("encode IndexBlock failed: %w", err)
+	}
+
+	if err = t.Footer.EncodeTo(file); err != nil {
+		log.Errorf("encode Footer to file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("encode Footer failed: %w", err)
 	}
 
 	return nil
 }
 
-// incrementReference increments the references of the SSTable.
-// A reference is typically used when an SSTable is to be removed (usually after compaction).
-// An SSTable with a reference (/usage) > 0 can not be removed unless all the references to the SSTable are dropped.
-func (t *SSTable) incrementReference() {
-	t.references.Add(1)
+func (t *SSTable) DecodeFooterFrom(file *os.File) error {
+	// 定位到文件末尾，读取 Footer
+	fileInfo, err := file.Stat()
+	if err != nil {
+		log.Errorf("get file info for %s error: %s", t.filePath, err.Error())
+		return fmt.Errorf("get file info failed: %w", err)
+	}
+	if _, err = file.Seek(fileInfo.Size()-block.FooterSize, io.SeekStart); err != nil {
+		log.Errorf("seek to footer position in file %s error: %s", t.filePath, err.Error())
+		return fmt.Errorf("seek to footer position failed: %w", err)
+	}
+	if err = t.Footer.DecodeFrom(file); err != nil {
+		log.Errorf("decode Footer from file %s error: %s", t.filePath, err.Error())
+		return fmt.Errorf("decode Footer failed: %w", err)
+	}
+
+	return nil
 }
 
-// LoadSpecifiedDataBlock 根据块号加载 DataBlocks 中对应的记录，并返回 Block 对象。
-func (t *SSTable) LoadSpecifiedDataBlock(blockIdx int) *block.DataBlock {
-	if blockIdx < 0 || blockIdx >= len(t.IndexBlock.Indexes) {
-		log.Errorf("block index out of range: %d", blockIdx)
-		return nil
+func (t *SSTable) DecodeDataBlock(file *os.File) error {
+	if _, err := file.Seek(t.Footer.DataHandle.Offset, io.SeekStart); err != nil {
+		log.Errorf("seek to IndexBlock position error: %s", err.Error())
+		return fmt.Errorf("seek to IndexBlock position failed: %w", err)
+	}
+	if err := t.DataBlock.DecodeFrom(file, t.Footer.DataHandle.Size); err != nil {
+		log.Errorf("decode DataBlock from file error: %s", err.Error())
+		return fmt.Errorf("decode DataBlock failed: %w", err)
 	}
 
-	dataBlock := block.NewDataBlock()
-	err := dataBlock.DecodeFrom(t.file, t.IndexBlock.Indexes[blockIdx].Handle)
+	return nil
+}
+
+func (t *SSTable) GetDataBlockFromFile(path string) ([]kv.KeyValuePair, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		log.Errorf("decode data block error: %s", err.Error())
-		return nil
+		log.Errorf("open file %s error: %s", path, err.Error())
+		return nil, fmt.Errorf("open file error: %w", err)
+	}
+	defer file.Close()
+
+	if err = t.DecodeDataBlock(file); err != nil {
+		log.Errorf("decode DataBlock from file %s error: %s", path, err.Error())
+		return nil, fmt.Errorf("decode DataBlock failed: %w", err)
 	}
 
-	return dataBlock
+	return t.GetKeyValuePairs()
+}
+
+func (t *SSTable) GetKeyValuePairs() ([]kv.KeyValuePair, error) {
+	// 校验 DataBlock 和 IndexBlock 是否匹配
+	if t.DataBlock.Len() == 0 || t.IndexBlock.Len() == 0 {
+		log.Warnf("SSTable %s has no data or index entries", t.filePath)
+		return nil, nil
+	}
+	if t.DataBlock.Len() != t.IndexBlock.Len() {
+		log.Errorf("SSTable %s has mismatched DataBlock and IndexBlock entries", t.filePath)
+		return nil, errors.New("mismatched DataBlock and IndexBlock entries")
+	}
+
+	pairs := make([]kv.KeyValuePair, 0)
+	for i, entry := range t.DataBlock.Entries {
+		pairs = append(pairs, kv.KeyValuePair{
+			Key:   t.IndexBlock.Indexes[i].Key,
+			Value: entry,
+		})
+	}
+
+	return pairs, nil
+}
+
+// GetValueByOffset 根据给定的偏移量从 SSTable 中获取对应的 Value。
+func (t *SSTable) GetValueByOffset(offset int64) (kv.Value, error) {
+	file, err := os.Open(t.filePath)
+	if err != nil {
+		log.Errorf("open file %s error: %s", t.filePath, err.Error())
+		return nil, fmt.Errorf("open file error: %w", err)
+	}
+	defer file.Close()
+
+	if _, err = file.Seek(offset, io.SeekStart); err != nil {
+		log.Errorf("seek to offset error: %s", err.Error())
+		return nil, fmt.Errorf("seek to offset failed: %w", err)
+	}
+
+	value := kv.Value{}
+	if err = value.DecodeFrom(file); err != nil {
+		log.Errorf("decode value error: %s", err.Error())
+		return nil, fmt.Errorf("decode value failed: %w", err)
+	}
+
+	return value, nil
 }
 
 // MayContain uses bloom filter to determine if the given key maybe present in the SSTable.
 // Returns true if the key MAYBE present, false otherwise.
 func (t *SSTable) MayContain(key kv.Key) bool {
+	if t.Header.MinKey > key || t.Header.MaxKey < key {
+		return false
+	}
 	return t.FilterBlock.MayContain(key)
 }
 
-// Id returns the id of SSTable.
-func (t *SSTable) Id() uint64 {
+// ID returns the id of SSTable.
+func (t *SSTable) ID() uint64 {
 	return t.id
-}
-
-// TotalReferences returns the total references to the SSTable.
-func (t *SSTable) TotalReferences() int64 {
-	return t.references.Load()
 }
 
 // Remove 释放 SSTable
 func (t *SSTable) Remove() error {
-	if err := t.file.Close(); err != nil {
-		log.Errorf("close file %s error: %s", t.file.Name(), err.Error())
-		return err
-	}
-	if err := os.Remove(t.file.Name()); err != nil {
-		log.Errorf("remove file %s error: %s", t.file.Name(), err.Error())
+	if err := os.Remove(t.filePath); err != nil {
+		log.Errorf("remove file %s error: %s", t.filePath, err.Error())
 		return err
 	}
 	return nil
-}
-
-func (t *SSTable) Close() {
-	if t.file != nil {
-		err := t.file.Close()
-		if err != nil {
-			log.Errorf("close file %s error: %s", t.file.Name(), err.Error())
-			return
-		}
-	}
 }
 
 func (t *SSTable) FilePath() string {

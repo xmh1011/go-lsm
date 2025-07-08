@@ -31,7 +31,7 @@ func newRotatingWriter(cfg *LoggerConfig, prefix string) *rotatingWriter {
 		dir:        cfg.Path,
 		filePrefix: prefix,
 		maxAge:     time.Duration(cfg.MaxAge) * 24 * time.Hour,
-		rotateSize: int64(cfg.RotateSize * 1024 * 1024), // MB -> bytes
+		rotateSize: cfg.RotateSize * 1024 * 1024, // MB -> bytes
 		rotateTime: time.Duration(cfg.RotateTime) * time.Hour,
 	}
 	// 启动时先创建一个日志文件

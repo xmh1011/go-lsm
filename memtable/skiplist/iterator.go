@@ -4,8 +4,6 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 )
 
-// Iterator 是对跳表的只读迭代器封装
-// 用于扫描等操作
 // Iterator is a read-only iterator for the SkipList,
 // used for range scans, flush operations, and compaction merges.
 type Iterator struct {
@@ -29,7 +27,7 @@ func NewSkipListIterator(s *SkipList) *Iterator {
 func (i *Iterator) SeekToFirst() {
 	i.curr = i.head.Forward[0]
 	// Skip over nodes marked as deleted.
-	for i.curr != nil && i.curr.Pair.Deleted {
+	for i.curr != nil && i.curr.Pair.IsDeleted() {
 		i.curr = i.curr.Forward[0]
 	}
 }
@@ -42,7 +40,7 @@ func (i *Iterator) SeekToLast() {
 		i.curr = i.curr.Forward[0]
 	}
 	// 如果最后节点被删除，则无法向后查找，可设为 nil
-	if i.curr != nil && i.curr.Pair.Deleted {
+	if i.curr != nil && i.curr.Pair.IsDeleted() {
 		i.curr = nil
 	}
 }
@@ -60,7 +58,7 @@ func (i *Iterator) Seek(key kv.Key) {
 	node = node.Forward[0]
 
 	// 跳过逻辑删除节点
-	for node != nil && node.Pair.Deleted {
+	for node != nil && node.Pair.IsDeleted() {
 		node = node.Forward[0]
 	}
 	i.curr = node
@@ -68,7 +66,7 @@ func (i *Iterator) Seek(key kv.Key) {
 
 // Valid returns true if the iterator points to a valid (non-deleted) node.
 func (i *Iterator) Valid() bool {
-	return i.curr != nil && !i.curr.Pair.Deleted
+	return i.curr != nil && !i.curr.Pair.IsDeleted()
 }
 
 // Next moves the iterator to the next node in the SkipList.

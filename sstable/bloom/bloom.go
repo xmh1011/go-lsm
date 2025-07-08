@@ -67,9 +67,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/bits-and-blooms/bitset"
 	"io"
 	"math"
+
+	"github.com/bits-and-blooms/bitset"
 
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
@@ -448,29 +449,43 @@ func (f *Filter) MayContain(key kv.Key) bool {
 	return f.TestString(string(key))
 }
 
-// DecodeFrom 从给定的 io.Reader 中解码 Filter。
-// 读取格式：[实际 Filter 二进制数据]
-func (f *Filter) DecodeFrom(r io.Reader, length uint64) error {
+// DecodeFrom 从 io.Reader 解码 Filter（小端存储 + uint64 长度前缀）
+func (f *Filter) DecodeFrom(r io.Reader) error {
+	// 1. 读取长度字段（8字节小端）
+	var length uint64
+	if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
+		log.Errorf("read filter length failed: %s", err)
+		return fmt.Errorf("decode filter length: %w", err)
+	}
+
+	// 2. 根据长度读取二进制数据
 	data := make([]byte, length)
 	if _, err := io.ReadFull(r, data); err != nil {
-		log.Errorf("failed to read filter block: %s", err.Error())
-		return fmt.Errorf("failed to read filter block: %w", err)
+		log.Errorf("read filter data failed: %s", err)
+		return fmt.Errorf("decode filter data: %w", err)
 	}
+
 	return f.UnmarshalBinary(data)
 }
 
-// EncodeTo 将布隆过滤器序列化为二进制，并写入 io.Writer。
-func (f *Filter) EncodeTo(w io.Writer) (uint64, error) {
+// EncodeTo 将 Filter 编码为字节流（小端存储 + uint64 长度前缀）
+func (f *Filter) EncodeTo(w io.Writer) error {
 	data, err := f.MarshalBinary()
 	if err != nil {
-		log.Errorf("marshal filter block failed: %s", err.Error())
-		return 0, fmt.Errorf("encode filter: %w", err)
+		log.Errorf("marshal filter to binary failed: %s", err)
+		return fmt.Errorf("encode filter: %w", err)
+	}
+	if err := binary.Write(w, binary.LittleEndian, uint64(len(data))); err != nil {
+		log.Errorf("write filter length failed: %s", err)
+		return fmt.Errorf("encode filter length: %w", err)
 	}
 
-	n, err := w.Write(data)
+	// 3. 写入二进制数据
+	_, err = w.Write(data)
 	if err != nil {
-		log.Errorf("write filter block failed: %s", err.Error())
-		return 0, fmt.Errorf("write filter: %w", err)
+		log.Errorf("marshal filter block failed: %s", err.Error())
+		return fmt.Errorf("encode filter: %w", err)
 	}
-	return uint64(n), nil
+
+	return nil
 }

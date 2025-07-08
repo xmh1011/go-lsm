@@ -10,13 +10,13 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 )
 
-// TestNewMemtable tests that a new Memtable is created with a valid WAL.
-func TestNewMemtable(t *testing.T) {
+// TestNewMemTable tests that a new MemTable is created with a valid WAL.
+func TestNewMemTable(t *testing.T) {
 	// Use t.TempDir() for an isolated temporary directory.
 	tempDir := t.TempDir()
-	m := NewMemtable(1, tempDir)
-	assert.NotNil(t, m, "Memtable should not be nil")
-	assert.Equal(t, uint64(1), m.id, "Memtable ID should match")
+	m := NewMemTable(1, tempDir)
+	assert.NotNil(t, m, "MemTable should not be nil")
+	assert.Equal(t, uint64(1), m.id, "MemTable ID should match")
 
 	// Check that the WAL file is created.
 	walPath := filepath.Join(tempDir, "1.wal")
@@ -27,11 +27,10 @@ func TestNewMemtable(t *testing.T) {
 // TestInsertAndSearch verifies that inserting a key/value pair and then searching for it works as expected.
 func TestInsertAndSearch(t *testing.T) {
 	tempDir := t.TempDir()
-	m := NewMemtable(2, tempDir)
+	m := NewMemTable(2, tempDir)
 	pair := kv.KeyValuePair{
-		Key:     "testKey",
-		Value:   []byte("testValue"),
-		Deleted: false,
+		Key:   "testKey",
+		Value: []byte("testValue"),
 	}
 
 	err := m.Insert(pair)
@@ -45,11 +44,10 @@ func TestInsertAndSearch(t *testing.T) {
 // TestDelete ensures that deleting a key works properly.
 func TestDelete(t *testing.T) {
 	tempDir := t.TempDir()
-	m := NewMemtable(3, tempDir)
+	m := NewMemTable(3, tempDir)
 	pair := kv.KeyValuePair{
-		Key:     "delKey",
-		Value:   []byte("delValue"),
-		Deleted: false,
+		Key:   "delKey",
+		Value: kv.DeletedValue,
 	}
 
 	// Insert the key/value pair.

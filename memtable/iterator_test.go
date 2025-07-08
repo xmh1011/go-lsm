@@ -8,16 +8,16 @@ import (
 	"github.com/xmh1011/go-lsm/kv"
 )
 
-// TestIterator verifies that the Memtable iterator returns keys in sorted order.
+// TestIterator verifies that the MemTable iterator returns keys in sorted order.
 func TestIterator(t *testing.T) {
 	tempDir := t.TempDir()
-	m := NewMemtable(4, tempDir)
+	m := NewMemTable(4, tempDir)
 
 	// Insert several key/value pairs with unsorted keys.
 	pairs := []kv.KeyValuePair{
-		{Key: "banana", Value: []byte("yellow"), Deleted: false},
-		{Key: "apple", Value: []byte("red"), Deleted: false},
-		{Key: "cherry", Value: []byte("dark red"), Deleted: false},
+		{Key: "banana", Value: []byte("yellow")},
+		{Key: "apple", Value: []byte("red")},
+		{Key: "cherry", Value: []byte("dark red")},
 	}
 
 	for _, pair := range pairs {
@@ -28,7 +28,7 @@ func TestIterator(t *testing.T) {
 	// The expected order is sorted by key: apple, banana, cherry.
 	expectedOrder := []kv.Key{"apple", "banana", "cherry"}
 
-	iter := NewMemtableIterator(m.entries)
+	iter := NewMemTableIterator(m.entries)
 	var resultKeys []kv.Key
 	for iter.Valid() {
 		resultKeys = append(resultKeys, iter.Key())

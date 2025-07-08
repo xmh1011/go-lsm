@@ -1,8 +1,8 @@
-// Memtable Iterator 的实现
-// 因为 SSTable 是有序文件结构，必须从 Memtable 中拿到升序遍历的迭代器
+// MemTable Iterator 的实现
+// 因为 SSTable 是有序文件结构，必须从 MemTable 中拿到升序遍历的迭代器
 // 顺序写入所有 key/value
-// Compaction 合并多个 SSTable 或 Memtable
-// 多路归并排序场景需要对多个 Memtable/SSTable 并发迭代
+// Compaction 合并多个 SSTable 或 MemTable
+// 多路归并排序场景需要对多个 MemTable/SSTable 并发迭代
 // TODO: 支持 Range Query（范围查询）
 
 package memtable
@@ -17,9 +17,9 @@ type Iterator struct {
 	iter *skiplist.Iterator
 }
 
-// NewMemtableIterator 返回一个 Iterator，用于有序遍历 Memtable 中的数据。
+// NewMemTableIterator 返回一个 Iterator，用于有序遍历 MemTable 中的数据。
 // 迭代器基于底层 SkipList 的迭代器实现。
-func NewMemtableIterator(l *skiplist.SkipList) *Iterator {
+func NewMemTableIterator(l *skiplist.SkipList) *Iterator {
 	iter := skiplist.NewSkipListIterator(l)
 	iter.SeekToFirst() // 定位到第一个有效节点
 	return &Iterator{iter: iter}
@@ -58,11 +58,6 @@ func (i *Iterator) Key() kv.Key {
 // Value 返回当前节点的 value。
 func (i *Iterator) Value() kv.Value {
 	return i.iter.Value()
-}
-
-// Pair 返回当前节点的 kv.KeyValuePair。
-func (i *Iterator) Pair() *kv.KeyValuePair {
-	return i.iter.Pair()
 }
 
 // Close 关闭迭代器，释放相关资源

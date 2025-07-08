@@ -1,7 +1,6 @@
 package sstable
 
 import (
-	"os"
 	"strconv"
 	"testing"
 
@@ -12,58 +11,57 @@ import (
 )
 
 func TestSSTableManagerCompaction(t *testing.T) {
-	// 1. 创建临时目录
-	tmp := t.TempDir()
-	// 2. 创建 SSTable 管理器
 	mgr := NewSSTableManager()
+	tmp := t.TempDir()
 
-	// 对于 Level0，maxFileNumsInLevel(0)=2^(0+2)=4，
-	// 为触发合并，生成 5 个 Level0 文件
+	// 1. 创建 Level0 文件
 	var oldFiles []string
 	for i := 0; i < 5; i++ {
-		// 创建一个内存表并写入单个 key-value
-		mem := memtable.NewMemtable(uint64(i+1), "")
-		// 构造不同的 key/value，这里用 i 来生成唯一字符串
-		keyStr := "key" + strconv.Itoa(i)
-		valStr := "val" + strconv.Itoa(i)
-		err := mem.Insert(kv.KeyValuePair{Key: kv.Key(keyStr), Value: []byte(valStr)})
+		mem := memtable.NewMemTable(uint64(i+1), tmp)
+		key := "key" + strconv.Itoa(i)
+		val := "val" + strconv.Itoa(i)
+		err := mem.Insert(kv.KeyValuePair{Key: kv.Key(key), Value: []byte(val)})
 		assert.NoError(t, err)
-		imem := memtable.NewIMemtable(mem)
-		sst := BuildSSTableFromIMemtable(imem)
-		sst.level = 0
-		// 得到文件路径，确保放在临时目录中（例如生成目录 tmp/001/0-level/...）
-		path := sstableFilePath(sst.id, 0, tmp)
-		err = sst.EncodeTo(path)
-		assert.NoError(t, err, "sstable should be encoded to file")
-		sst.filePath = path
-		oldFiles = append(oldFiles, path)
-		// 模拟该文件目前在磁盘中
-		mgr.addTable(sst)
-		mgr.addNewFile(0, sst.FilePath())
+
+		imem := memtable.NewIMemTable(mem)
+		sst := BuildSSTableFromIMemTable(imem)
+		sst.level = 0 // 明确指定 Level0
+
+		oldFiles = append(oldFiles, sst.FilePath())
+		// 添加到管理器
+		err = mgr.addNewSSTables([]*SSTable{sst})
+		assert.NoError(t, err)
+		// 验证文件可读
+		assert.FileExists(t, sst.FilePath())
 	}
 
-	// 3. 触发 Compaction
+	// 2. 触发合并
 	err := mgr.Compaction()
-	assert.NoError(t, err, "compaction should succeed")
+	assert.NoError(t, err, "compaction failed")
 
-	// 4. 检查 Level0 的老文件是否已从磁盘中删除
+	// 3. 验证 Level0 文件被删除
 	for _, f := range oldFiles {
-		_, err := os.Stat(f)
-		assert.True(t, os.IsNotExist(err), "old file should be removed after compaction: %s", f)
+		assert.NoFileExists(t, f, "old Level0 file not deleted: %s", f)
 	}
 
-	// 5. 检查 Level0 的 diskMap 与 totalMap 均已清空
-	assert.Empty(t, mgr.diskMap[0], "level0 diskMap should be empty after compaction")
-	assert.Empty(t, mgr.totalMap[0], "level0 totalMap should be empty after compaction")
+	// 4. 验证 Level0 totalMap 清空
+	assert.Empty(t, mgr.totalMap[0], "Level0 totalMap not empty")
 
-	// 6. 检查 Level1 中应有新生成的文件
-	assert.True(t, len(mgr.totalMap[1]) > 0, "compaction should produce new files in level1")
+	// 5. 验证 Level1 有新文件生成
+	level1Files := mgr.totalMap[1]
+	assert.True(t, len(level1Files) > 0, "no Level1 files generated")
 
-	// 7. 对 Level1 中的每个新文件尝试解码，并确保包含数据块
-	for _, f := range mgr.totalMap[1] {
+	// 6. 验证 Level1 文件内容正确
+	for _, f := range level1Files {
 		sst := NewSSTable()
 		err := sst.DecodeFrom(f)
-		assert.NoError(t, err)
-		assert.NotEmpty(t, sst.DataBlocks)
+		assert.NoError(t, err, "decode Level1 SSTable failed: %s", f)
+		assert.NotEmpty(t, sst.DataBlock, "Level1 SSTable has empty DataBlocks: %s", f)
+
+		// 验证数据完整性
+		for i, value := range sst.DataBlock.Entries {
+			expectedVal := "val" + strconv.Itoa(i)
+			assert.Equal(t, expectedVal, string(value), "data mismatch in %s", f)
+		}
 	}
 }

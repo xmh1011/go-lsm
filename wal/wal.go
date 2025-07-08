@@ -2,11 +2,11 @@
 // The Write-Ahead Log (WAL) is a fundamental mechanism used to ensure durability and crash recovery
 // in storage systems like databases and LSM-tree-based key-value stores.
 // When a write operation (such as inserting or deleting a key-value pair) occurs,
-// the data is first appended to the WAL file on disk before being applied to the in-memory structure (e.g., Memtable).
+// the data is first appended to the WAL file on disk before being applied to the in-memory structure (e.g., MemTable).
 // This append-only log ensures that, in the event of a crash or system failure,
 // the system can replay the WAL to restore the in-memory state to its last consistent point.
 // Since the WAL is written sequentially, it offers high write throughput and minimal I/O overhead.
-// Once the data in memory (Memtable) is flushed to disk in a more structured format (like an SSTable),
+// Once the data in memory (MemTable) is flushed to disk in a more structured format (like an SSTable),
 // the corresponding WAL file can be safely deleted. In LSM-based systems,
 // WAL plays a crucial role in achieving durability, fault tolerance, and write efficiency.
 
@@ -15,11 +15,11 @@ package wal
 import (
 	"bytes"
 	"fmt"
-	"github.com/xmh1011/go-lsm/config"
 	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/xmh1011/go-lsm/config"
 	"github.com/xmh1011/go-lsm/kv"
 	"github.com/xmh1011/go-lsm/log"
 )

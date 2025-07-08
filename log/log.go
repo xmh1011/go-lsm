@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/go-ini/ini"
 	"github.com/sirupsen/logrus"
@@ -23,127 +22,109 @@ type LoggerConfig struct {
 }
 
 var (
-	logger   *logrus.Logger
+	// 包级日志器（通过 init() 初始化）
+	logger *logrus.Logger
+
+	// 配置映射
 	levelMap = map[string]logrus.Level{
 		"debug": logrus.DebugLevel,
 		"info":  logrus.InfoLevel,
 		"warn":  logrus.WarnLevel,
 		"error": logrus.ErrorLevel,
 	}
-	Config *LoggerConfig
-	once   sync.Once
+
+	// 默认配置
+	defaultConfig = &LoggerConfig{
+		Level:      "info",
+		Path:       util.GetCurrentDir(),
+		FileFormat: "text",
+		TimeFormat: "2006-01-02 15:04:05",
+	}
 )
 
-// 默认日志文件前缀
-const (
-	defaultLogFilePrefix = "lsm"
-)
+const defaultLogFilePrefix = "lsm"
 
-// InitLogger 初始化日志模块
-func InitLogger(configPath string) error {
-	var err error
-	once.Do(func() {
-		// 初始化配置文件
-		if configPath == "" {
-			InitDefaultLogger()
-			return
-		}
-		cfg, err := ini.Load(configPath)
-		if err != nil {
-			return
-		}
-		if err := cfg.MapTo(&Config); err != nil {
-			return
-		}
-
-		// 设置日志级别
-		level := logrus.InfoLevel
-		if l, ok := levelMap[strings.ToLower(Config.Level)]; ok {
-			level = l
-		}
-		logger.SetLevel(level)
-
-		// 设置日志格式
-		switch strings.ToLower(Config.FileFormat) {
-		case "json":
-			logger.SetFormatter(&logrus.JSONFormatter{
-				TimestampFormat: Config.TimeFormat,
-			})
-		default:
-			logger.SetFormatter(&logrus.TextFormatter{
-				TimestampFormat: Config.TimeFormat,
-				FullTimestamp:   true,
-			})
-		}
-
-		// 如果没有指定日志目录，默认写到当前执行文件目录下
-		if Config.Path == "" {
-			Config.Path = util.GetCurrentDir()
-		}
-		if err := os.MkdirAll(Config.Path, 0755); err != nil {
-			return
-		}
-
-		// 创建一个可轮转的 Writer
-		rotatingWriter := newRotatingWriter(Config, defaultLogFilePrefix)
-
-		// 输出目标：文件(可轮转) + 控制台
-		logger.SetOutput(io.MultiWriter(rotatingWriter, os.Stdout))
-	})
-
-	return err
-}
-
-func InitDefaultLogger() {
+// init 在导入包时自动初始化默认日志器
+func init() {
 	logger = logrus.New()
-	// 设置日志级别
 	logger.SetLevel(logrus.InfoLevel)
-
-	// 设置日志格式
-	logger.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-	})
-
-	// 输出目标：文件(可轮转) + 控制台
+	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
 	logger.SetOutput(os.Stdout)
 }
 
-// GetLogger 返回全局 logger 实例
-func GetLogger() *logrus.Logger {
-	if logger == nil {
-		InitDefaultLogger()
+// InitLogger 从配置文件初始化日志器（可选）
+func InitLogger(configPath string) error {
+	if configPath == "" {
+		return nil // 使用默认配置
 	}
-	return logger
+
+	// 加载配置文件
+	cfg, err := ini.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	config := defaultConfig // 基于默认配置覆盖
+	if err := cfg.MapTo(config); err != nil {
+		return err
+	}
+
+	// 设置日志级别
+	if level, ok := levelMap[strings.ToLower(config.Level)]; ok {
+		logger.SetLevel(level)
+	}
+
+	// 设置日志格式
+	switch strings.ToLower(config.FileFormat) {
+	case "json":
+		logger.SetFormatter(&logrus.JSONFormatter{TimestampFormat: config.TimeFormat})
+	default:
+		logger.SetFormatter(&logrus.TextFormatter{
+			TimestampFormat: config.TimeFormat,
+			FullTimestamp:   true,
+		})
+	}
+
+	// 确保日志目录存在
+	if err := os.MkdirAll(config.Path, 0755); err != nil {
+		return err
+	}
+
+	// 设置输出（文件轮转 + 控制台）
+	rotatingWriter := newRotatingWriter(config, defaultLogFilePrefix)
+	logger.SetOutput(io.MultiWriter(rotatingWriter, os.Stdout))
+
+	return nil
 }
 
 func Info(args ...any) {
-	GetLogger().Info(args...)
+	logger.Info(args...)
 }
 
 func Infof(format string, args ...any) {
-	GetLogger().Infof(format, args...)
+	logger.Infof(format, args...)
 }
 
 func Error(args ...any) {
-	GetLogger().Error(args...)
+	logger.Error(args...)
 }
 
 func Errorf(format string, args ...any) {
-	GetLogger().Errorf(format, args...)
+	logger.Errorf(format, args...)
 }
 
 func Debug(args ...any) {
-	GetLogger().Debug(args...)
+	logger.Debug(args...)
 }
 
 func Debugf(format string, args ...any) {
-	GetLogger().Debugf(format, args...)
+	logger.Debugf(format, args...)
 }
 
 func Warn(args ...any) {
-	GetLogger().Warn(args...)
+	logger.Warn(args...)
 }
 
 func Warnf(format string, args ...any) {
-	GetLogger().Warnf(format, args...)
+	logger.Warnf(format, args...)
 }

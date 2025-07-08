@@ -16,16 +16,16 @@ import (
 // 5. 如果 Level1 超限，异步触发后续合并。
 // Compaction 执行 Level0 的同步合并，并触发后续异步合并
 func (m *Manager) Compaction() error {
-	// 检查 Level0 是否需要压缩
-	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
-		log.Debug("level 0 not need to be merged")
-		return nil
-	}
-
 	// 等待同一层级的压缩完成
 	if err := m.waitCompaction(minSSTableLevel); err != nil {
 		log.Errorf("wait compaction for level %d error: %s", minSSTableLevel, err.Error())
 		return fmt.Errorf("wait compaction error: %w", err)
+	}
+
+	// 检查 Level0 是否需要压缩
+	if !m.isLevelNeedToBeMerged(minSSTableLevel) {
+		log.Debug("level 0 not need to be merged")
+		return nil
 	}
 
 	// 开始 Level0 压缩
@@ -77,7 +77,13 @@ func (m *Manager) compactLevel(level int) error {
 	defer m.endCompaction(level)
 
 	// 1. 读取当前层级的所有键值对
-	allPairs, oldFiles, err := m.loadLevelData(level)
+	files := m.getFilesByLevel(level)
+	// 对于 level 1 及以上的层级
+	// 按照时间顺序，只合并超出数量的旧文件
+	if level > minSSTableLevel {
+		files = files[:maxFileNumsInLevel(level)]
+	}
+	allPairs, err := m.loadLevelData(files)
 	if err != nil {
 		log.Errorf("load level %d data error: %s", level, err.Error())
 		return fmt.Errorf("load level %d data error: %w", level, err)
@@ -100,7 +106,7 @@ func (m *Manager) compactLevel(level int) error {
 	newTables := CompactAndMergeKVs(allPairs, level+1) // 目标层级为当前+1
 
 	// 4. 清理旧文件
-	if err := m.removeOldSSTables(oldFiles, level); err != nil {
+	if err := m.removeOldSSTables(files, level); err != nil {
 		log.Errorf("remove old SSTables error: %s", err.Error())
 		return fmt.Errorf("remove old SSTables error: %w", err)
 	}
@@ -163,10 +169,8 @@ func (m *Manager) isLevelCompacting(level int) bool {
 }
 
 // loadLevelData 加载指定层级的所有键值对
-func (m *Manager) loadLevelData(level int) ([]kv.KeyValuePair, []string, error) {
-	files := m.getFilesByLevel(level)
+func (m *Manager) loadLevelData(files []string) ([]kv.KeyValuePair, error) {
 	allPairs := make([]kv.KeyValuePair, 0)
-	oldFiles := make([]string, 0)
 
 	for _, path := range files {
 		sst, ok := m.getSSTableByPath(path)
@@ -178,14 +182,13 @@ func (m *Manager) loadLevelData(level int) ([]kv.KeyValuePair, []string, error) 
 		pairs, err := sst.GetDataBlockFromFile(path)
 		if err != nil {
 			log.Errorf("decode sstable from file %s error: %s", path, err.Error())
-			return nil, nil, fmt.Errorf("decode sstable from file %s error: %w", path, err)
+			return nil, fmt.Errorf("decode sstable from file %s error: %w", path, err)
 		}
 
 		allPairs = append(allPairs, pairs...)
-		oldFiles = append(oldFiles, path)
 	}
 
-	return allPairs, oldFiles, nil
+	return allPairs, nil
 }
 
 // mergeNextLevelFiles 合并下一层级的重叠文件

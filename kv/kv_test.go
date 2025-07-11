@@ -129,9 +129,21 @@ func TestKey_EncodeDecode(t *testing.T) {
 		key     Key
 		wantErr bool
 	}{
-		{"normal key", "test_key", false},
-		{"empty key", "", false},
-		{"long key", Key(make([]byte, 1000)), false},
+		{
+			name:    "normal key",
+			key:     "test_key",
+			wantErr: false,
+		},
+		{
+			name:    "empty key",
+			key:     "",
+			wantErr: false,
+		},
+		{
+			name:    "long key",
+			key:     Key(make([]byte, 1000)),
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -160,10 +172,26 @@ func TestValue_EncodeDecode(t *testing.T) {
 		value   Value
 		wantErr bool
 	}{
-		{"normal value", []byte("test_value"), false},
-		{"empty value", []byte{}, false},
-		{"deleted value", DeletedValue, false},
-		{"large value", make([]byte, 2000), false},
+		{
+			name:    "normal value",
+			value:   []byte("test_value"),
+			wantErr: false,
+		},
+		{
+			name:    "empty value",
+			value:   []byte{},
+			wantErr: false,
+		},
+		{
+			name:    "deleted value",
+			value:   DeletedValue,
+			wantErr: false,
+		},
+		{
+			name:    "large value",
+			value:   make([]byte, 2000),
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -45,7 +45,7 @@ func (b *Builder) ShouldFlush() bool {
 
 // Finalize 填充 IndexBlock 和 Header
 func (b *Builder) Finalize() {
-	// 初始化 Header（假设 Header 包含 MinKey 和 MaxKey）
+	// 初始化 Header
 	if b.table.DataBlock.Len() > 0 {
 		b.table.Header = &block.Header{
 			MaxKey: b.table.IndexBlock.Indexes[b.table.DataBlock.Len()-1].Key,

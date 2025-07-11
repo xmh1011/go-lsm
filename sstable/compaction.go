@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/xmh1011/go-lsm/kv"
@@ -238,5 +239,5 @@ func getGlobalKeyRangeFromPairs(pairs []kv.KeyValuePair) (kv.Key, kv.Key) {
 
 // overlapRange 判断 global range [minKey, maxKey] 是否与 sst 索引区间有交集
 func overlapRange(minKey, maxKey kv.Key, sst *SSTable) bool {
-	return !(sst.Header.MinKey < minKey || sst.Header.MaxKey > maxKey)
+	return bytes.Compare([]byte(sst.Header.MinKey), []byte(maxKey)) <= 0 && bytes.Compare([]byte(sst.Header.MaxKey), []byte(minKey)) >= 0
 }

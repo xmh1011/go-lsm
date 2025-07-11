@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -26,7 +27,7 @@ func init() {
 	// 创建 SSTable 目录
 	err := os.MkdirAll(config.GetSSTablePath(), os.ModePerm)
 	if err != nil {
-		log.Errorf("failed to create sstable directory: %v", err)
+		log.Errorf("failed to create sstable directory: %s", err.Error())
 	}
 	// 为各层创建对应目录
 	for i := minSSTableLevel; i <= maxSSTableLevel; i++ {
@@ -36,7 +37,7 @@ func init() {
 	}
 }
 
-// Manager 管理内存中的 SSTable 元信息（Footer/Filter/Index）+ 磁盘中剩余的文件记录。
+// Manager 管理内存中的 SSTable 元信息（Footer/Filter/Index）+ 磁盘中的文件记录。
 type Manager struct {
 	mu sync.RWMutex
 
@@ -49,6 +50,9 @@ type Manager struct {
 	// totalMap 记录所有层级的文件路径
 	totalMap map[int][]string
 
+	// 稀疏索引，按照 key 排序 level 1 及以上的 SSTable，用于查找
+	sparseIndexes [][]*SSTable
+
 	// 异步合并控制
 	compactionCond   *sync.Cond
 	compactingLevels map[int]bool // 记录各层级的压缩状态
@@ -60,6 +64,7 @@ func NewSSTableManager() *Manager {
 		fileIndex:        make(map[string]*SSTable),
 		totalMap:         make(map[int][]string),
 		compactingLevels: make(map[int]bool),
+		sparseIndexes:    make([][]*SSTable, maxSSTableLevel),
 	}
 	mgr.compactionCond = sync.NewCond(&mgr.mu)
 	return mgr
@@ -100,20 +105,26 @@ func (m *Manager) Search(key kv.Key) ([]byte, error) {
 			return nil, fmt.Errorf("wait for compaction failed: %w", err)
 		}
 
-		// 3. 获取该层级的表切片（已按ID降序排列）
-		tables := m.getLevelTables(level)
-
-		// 4. 在当前层级中按表ID降序查找
-		for _, table := range tables {
-			val, err := m.SearchFromTable(table, key)
+		// 3. 先从level 0开始查找
+		if level == minSSTableLevel {
+			val, err := m.searchFromLevel0(key)
 			if err != nil {
-				// 记录警告但继续查找其他表
-				log.Warnf("search from table %s failed: %s", table.FilePath(), err.Error())
-				continue
+				log.Errorf("search from level 0 failed: %s", err.Error())
+				return nil, fmt.Errorf("search from level 0 failed: %w", err)
 			}
 			if val != nil {
 				return val, nil
 			}
+			continue
+		}
+
+		val, err := m.searchFromLevelWithSparseIndex(key, level)
+		if err != nil {
+			log.Errorf("search from level %d failed: %s", level, err.Error())
+			return nil, fmt.Errorf("search from level %d failed: %w", level, err)
+		}
+		if val != nil {
+			return val, nil
 		}
 	}
 
@@ -146,7 +157,56 @@ func (m *Manager) isCompacting(level int) bool {
 	return m.compactingLevels[level]
 }
 
-func (m *Manager) SearchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
+func (m *Manager) searchFromLevel0(key kv.Key) (kv.Value, error) {
+	tables := m.getLevelTables(minSSTableLevel)
+
+	// 在当前层级中按表ID降序查找
+	for _, table := range tables {
+		val, err := m.searchFromTable(table, key)
+		if err != nil {
+			log.Errorf("search from table %s failed: %s", table.FilePath(), err.Error())
+			return nil, fmt.Errorf("search from table %s failed: %w", table.FilePath(), err)
+		}
+		if val != nil {
+			return val, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// searchFromLevelWithSparseIndex 使用稀疏索引在指定层级查找key
+func (m *Manager) searchFromLevelWithSparseIndex(key kv.Key, level int) (kv.Value, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// 1. 使用稀疏索引找到可能包含该key的SSTable范围
+	// 稀疏索引是按MinKey排序的，我们可以找到最后一个MinKey小于等于key的SSTable
+	sparseIndexes := m.sparseIndexes[level-1]
+	index := sort.Search(len(sparseIndexes), func(i int) bool {
+		return bytes.Compare([]byte(sparseIndexes[i].Header.MinKey), []byte(key)) > 0
+	})
+	if index > 0 {
+		index-- // 调整到最后一个 <= key 的位置
+	}
+
+	// 2. 在SSTable中查找key
+	if index < len(sparseIndexes) {
+		sst := sparseIndexes[index]
+		val, err := m.searchFromTable(sst, key)
+		if err != nil {
+			log.Errorf("search from table %s failed: %s", sst.FilePath(), err.Error())
+			return nil, fmt.Errorf("search from table %s failed: %w", sst.FilePath(), err)
+		}
+		if val != nil {
+			return val, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *Manager) searchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
 	if !sst.MayContain(key) {
 		return nil, nil
 	}
@@ -229,6 +289,17 @@ func (m *Manager) addTable(table *SSTable) {
 	m.fileIndex[table.FilePath()] = table
 
 	m.totalMap[level] = append(m.totalMap[level], table.FilePath())
+
+	// 更新稀疏索引（仅对 Level 1 及以上层级）
+	if level > minSSTableLevel {
+		// 根据最小 Key 更新稀疏索引，进行插入
+		sparseIndexes := m.sparseIndexes[level-1]
+		index := sort.Search(len(sparseIndexes), func(i int) bool {
+			return bytes.Compare([]byte(sparseIndexes[i].Header.MinKey), []byte(table.Header.MinKey)) > 0
+		})
+		sparseIndexes = append(sparseIndexes[:index], append([]*SSTable{table}, sparseIndexes[index:]...)...)
+		m.sparseIndexes[level-1] = sparseIndexes
+	}
 }
 
 // removeOldSSTables 删除旧的 SSTable 文件
@@ -237,13 +308,23 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 	defer m.mu.Unlock()
 
 	for _, oldPath := range oldFiles {
-		// 从层级中移除
 		if sst, exists := m.fileIndex[oldPath]; exists {
+			// 从层级中移除
 			tables := m.levels[level]
 			for i, t := range tables {
 				if t.id == sst.id {
 					m.levels[level] = append(tables[:i], tables[i+1:]...)
 					break
+				}
+			}
+			// 从稀疏索引中移除
+			if level > minSSTableLevel {
+				sparseIndexes := m.sparseIndexes[level-1]
+				for i, t := range sparseIndexes {
+					if t.id == sst.id {
+						m.sparseIndexes[level-1] = append(sparseIndexes[:i], sparseIndexes[i+1:]...)
+						break
+					}
 				}
 			}
 		}
@@ -256,7 +337,7 @@ func (m *Manager) removeOldSSTables(oldFiles []string, level int) error {
 		// 物理删除文件
 		if err := os.Remove(oldPath); err != nil {
 			log.Errorf("remove file %s error: %s", oldPath, err.Error())
-			return err
+			return fmt.Errorf("remove file %s failed: %w", oldPath, err)
 		}
 	}
 

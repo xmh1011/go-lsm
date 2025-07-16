@@ -66,7 +66,7 @@ func TestIMemTableId(t *testing.T) {
 	dir := t.TempDir()
 	mem := NewMemTable(22, dir)
 	imem := NewIMemTable(mem)
-	assert.Equal(t, uint64(22), imem.Id())
+	assert.Equal(t, uint64(22), imem.ID())
 }
 
 // TestIMemTable_SharedData ensures that the IMemTable shares data with MemTable.

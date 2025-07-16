@@ -21,3 +21,5 @@ stdout
 bench_test.txt
 bench_custom.txt
 coverage.txt
+/config/wal/
+/config/sstable/

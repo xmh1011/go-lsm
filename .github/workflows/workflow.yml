@@ -1,4 +1,4 @@
-name: workflow.yml
+name: Run tests and upload coverage
 on:
   pull_request:
     branches:
@@ -8,17 +8,25 @@ on:
       - main
 
 jobs:
-  codcov:
+  test:
+    name: Run tests and collect coverage
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          # Make sure the actual branch is checked out when running on pull requests
-          ref: ${{ github.head_ref }}
+          fetch-depth: 2
 
-      - name: Upload coverage reports to Codecov
+      - name: Set up Go
+        uses: actions/setup-go@v5
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -coverprofile=coverage.txt
+
+      - name: Upload results to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

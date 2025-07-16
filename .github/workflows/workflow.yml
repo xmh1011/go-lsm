@@ -8,6 +8,39 @@ on:
       - main
 
 jobs:
+  LineLint:
+    name: line lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: install linelint
+        run: cargo install linelint-cli
+      - name: Run linelint check
+        run: linelint check
+  GoLint:
+    name: "static check, style check, go vet and other go lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+      - name: Run static check
+        run: make static-check
+      - name: Run style check
+        run: make style-check
+      - name: Run go vet check
+        run: make go-vet-check
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v3.6.0
+        with:
+          version: v1.56
+          args: --disable=staticcheck --timeout=10m --tests=false --skip-dirs=lifted --skip-dirs=tests
+          only-new-issues: true
+          skip-pkg-cache: true
+          skip-build-cache: true
   test:
     name: Run tests and collect coverage
     runs-on: ubuntu-latest

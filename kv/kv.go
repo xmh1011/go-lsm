@@ -16,8 +16,10 @@ import (
 	"github.com/xmh1011/go-lsm/log"
 )
 
-type Key string
-type Value []byte
+type (
+	Key   string
+	Value []byte
+)
 
 type KeyValuePair struct {
 	Key   Key

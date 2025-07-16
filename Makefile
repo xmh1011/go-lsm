@@ -8,7 +8,7 @@ endif
 # Project Variables
 BINARY_NAME = go-lsm
 OUTPUT_DIR = output
-TEST_FILE = unittest.txt coverage.out bench_test.txt bench_custom.txt data
+TEST_FILE = unittest.txt coverage.txt bench_test.txt bench_custom.txt data
 MAIN_SRC = ./main.go
 GO_PACKAGES  := $$($(GO) list ./...| grep -vE "vendor")
 
@@ -58,7 +58,7 @@ clean-data:
 test: prepare test-case
 test-case:
 	@echo "Running tests..."
-	$(GO) test -v -cover $(GO_PACKAGES) -coverpkg=./... -coverprofile=coverage.out | tee unittest.txt
+	$(GO) test -v -cover $(GO_PACKAGES) -coverpkg=./... -coverprofile=coverage.txt | tee unittest.txt
 
 bench: clean-data prepare
 	@echo "Running bench test..."

@@ -136,10 +136,11 @@ func TestDataBlock_DecodeCorruptedData(t *testing.T) {
 		// 创建包含无效长度前缀的数据
 		buf := &bytes.Buffer{}
 		// 写入一个过大的长度前缀（4字节）
-		binary.Write(buf, binary.LittleEndian, uint32(999999))
+		err := binary.Write(buf, binary.LittleEndian, uint32(999999))
+		assert.NoError(t, err, "Write should not error")
 
 		decodedBlock := NewDataBlock()
-		err := decodedBlock.DecodeFrom(buf, 0)
+		err = decodedBlock.DecodeFrom(buf, 0)
 
 		assert.Error(t, err, "DecodeFrom should error with invalid length prefix")
 	})
@@ -148,12 +149,13 @@ func TestDataBlock_DecodeCorruptedData(t *testing.T) {
 	t.Run("incomplete data", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		// 写入长度前缀（4字节）
-		binary.Write(buf, binary.LittleEndian, uint32(10)) // 需要10字节数据
+		err := binary.Write(buf, binary.LittleEndian, uint32(10)) // 需要10字节数据
+		assert.NoError(t, err, "Write should not error")
 		// 但只写入5字节数据
 		buf.Write([]byte("incom"))
 
 		decodedBlock := NewDataBlock()
-		err := decodedBlock.DecodeFrom(buf, 0)
+		err = decodedBlock.DecodeFrom(buf, 0)
 
 		assert.Error(t, err, "DecodeFrom should error with incomplete data")
 	})

@@ -33,9 +33,7 @@ func TestSSTableManagerSearch(t *testing.T) {
 	// 创建数据块和过滤器
 	sst.FilterBlock = bloom.NewBloomFilter(1024, 3)
 	for _, record := range testRecords {
-		sst.DataBlock.Add(record.Value)
-		sst.FilterBlock.Add([]byte(record.Key))
-		sst.IndexBlock.Add(record.Key, 0)
+		sst.Add(record)
 	}
 	sst.Header = block.NewHeader(testRecords[0].Key, testRecords[len(testRecords)-1].Key)
 
@@ -114,9 +112,7 @@ func TestSSTableManagerRecover(t *testing.T) {
 		Value: []byte("value1"),
 	}
 	sst.FilterBlock = bloom.NewBloomFilter(1024, 3)
-	sst.DataBlock.Add(record.Value)
-	sst.FilterBlock.Add([]byte(record.Key))
-	sst.IndexBlock.Add(record.Key, 0)
+	sst.Add(&record)
 	sst.Header = block.NewHeader(record.Key, record.Key)
 
 	// 编码并写入文件

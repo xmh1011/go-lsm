@@ -54,7 +54,10 @@ func TestHeader_EncodeDecode(t *testing.T) {
 			// 创建临时文件用于解码测试
 			tmpFile, err := os.CreateTemp("", "header_test")
 			assert.NoError(t, err, "CreateTemp should not error")
-			defer os.Remove(tmpFile.Name())
+			defer func(name string) {
+				err := os.Remove(name)
+				assert.NoError(t, err, "Remove temp file should not error")
+			}(tmpFile.Name())
 
 			// 将编码后的数据写入临时文件
 			_, err = tmpFile.Write(buf.Bytes())
@@ -86,7 +89,10 @@ func TestHeader_DecodeFrom_FileErrors(t *testing.T) {
 		nonExistentFile, err := os.Open("non_existent_file")
 		assert.Error(t, err, "Open should error for non-existent file")
 		if nonExistentFile != nil {
-			defer nonExistentFile.Close()
+			defer func(nonExistentFile *os.File) {
+				err := nonExistentFile.Close()
+				assert.NoError(t, err, "Close should not error")
+			}(nonExistentFile)
 		}
 
 		header := NewHeader("key1", "key2")
@@ -99,7 +105,10 @@ func TestHeader_DecodeFrom_FileErrors(t *testing.T) {
 		// 创建临时文件并写入不完整的数据（只写入 minKey）
 		tmpFile, err := os.CreateTemp("", "incomplete_header_test")
 		assert.NoError(t, err, "CreateTemp should not error")
-		defer os.Remove(tmpFile.Name())
+		defer func(name string) {
+			err := os.Remove(name)
+			assert.NoError(t, err, "Remove temp file should not error")
+		}(tmpFile.Name())
 
 		minKey := kv.Key("key1")
 		_, err = tmpFile.Write([]byte(minKey)) // 只写入 minKey，不写入 maxKey

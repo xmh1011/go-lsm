@@ -85,7 +85,12 @@ func (t *SSTable) DecodeFrom(filePath string) error {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Errorf("close file %s error: %s", filePath, err.Error())
+		}
+	}(file)
 	t.filePath = filePath
 
 	if err = t.Header.DecodeFrom(file); err != nil {
@@ -128,7 +133,12 @@ func (t *SSTable) EncodeTo(filePath string) error {
 		log.Errorf("open file %s error: %s", filePath, err.Error())
 		return fmt.Errorf("open file error: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Errorf("close file %s error: %s", filePath, err.Error())
+		}
+	}(file)
 	t.filePath = filePath
 
 	if err = t.Header.EncodeTo(file); err != nil {
@@ -215,7 +225,12 @@ func (t *SSTable) GetDataBlockFromFile(path string) ([]kv.KeyValuePair, error) {
 		log.Errorf("open file %s error: %s", path, err.Error())
 		return nil, fmt.Errorf("open file error: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Errorf("close file %s error: %s", path, err.Error())
+		}
+	}(file)
 
 	if err = t.DecodeDataBlock(file); err != nil {
 		log.Errorf("decode DataBlock from file %s error: %s", path, err.Error())
@@ -254,7 +269,12 @@ func (t *SSTable) GetValueByOffset(offset int64) (kv.Value, error) {
 		log.Errorf("open file %s error: %s", t.filePath, err.Error())
 		return nil, fmt.Errorf("open file error: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Errorf("close file %s error: %s", t.filePath, err.Error())
+		}
+	}(file)
 
 	if _, err = file.Seek(offset, io.SeekStart); err != nil {
 		log.Errorf("seek to offset error: %s", err.Error())
@@ -291,6 +311,13 @@ func (t *SSTable) Remove() error {
 		return err
 	}
 	return nil
+}
+
+// Add 加入新的 KV 对到 SSTable
+func (t *SSTable) Add(pair *kv.KeyValuePair) {
+	t.DataBlock.Add(pair.Value)
+	t.IndexBlock.Add(pair.Key, 0)
+	t.FilterBlock.Add([]byte(pair.Key))
 }
 
 func (t *SSTable) FilePath() string {

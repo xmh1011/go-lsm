@@ -8,7 +8,7 @@ endif
 # Project Variables
 BINARY_NAME = go-lsm
 OUTPUT_DIR = output
-TEST_FILE = unittest.txt coverage.txt bench_test.txt bench_custom.txt data
+TEST_FILE = unittest.txt coverage.txt bench_test.txt bench_custom.txt
 MAIN_SRC = ./main.go
 GO_PACKAGES  := $(shell $(GO) list ./... | grep -vE "vendor")
 GO_FILES := $(shell find . -type f -name '*.go' -not -path "./vendor/*")
@@ -17,9 +17,9 @@ COMPANY_PREFIXES := "github.com/xmh1011"
 IMPORTS_ORDER := "std,general,company,project"
 
 # Commands
-.PHONY: all build run clean test help prepare prepare-dep gomod set-env \
+.PHONY: all build run clean test help prepare set-env \
         bench benchmark benchmarks go-vet-check static-check style-check format \
-        install-goimports-reviser install-staticcheck
+        install-go-imports-reviser install-static-check
 
 # Default command: build the binary
 all: prepare build
@@ -29,13 +29,7 @@ set-env:
 	$(GO) env -w GO111MODULE=on
 	$(GO) env -w GONOSUMDB=*
 
-# Download dependencies
-prepare: gomod
-prepare-dep:
-	$(GO) env
-	$(GO) mod download -x
-
-gomod: set-env
+prepare: set-env
 	$(GO) mod tidy
 	$(GO) mod download || $(GO) mod download -x
 
@@ -56,6 +50,7 @@ clean:
 	rm -rf $(OUTPUT_DIR)
 	rm -rf $(TEST_FILE)
 	find . -type f \( -name "*.sst" -o -name "*.wal" \) -delete
+	find . -type d -name "data" -exec rm -rf {} +
 	$(GO) clean
 
 clean-data:

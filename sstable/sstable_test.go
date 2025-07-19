@@ -100,7 +100,10 @@ func TestDecodeFooterFrom(t *testing.T) {
 
 	file, err := os.Open(table.filePath)
 	assert.NoError(t, err)
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		assert.NoError(t, err)
+	}(file)
 
 	newTable := NewRecoverSSTable(0)
 	err = newTable.DecodeFooterFrom(file)
@@ -119,7 +122,10 @@ func TestDecodeDataBlock(t *testing.T) {
 
 	file, err := os.Open(table.filePath)
 	assert.NoError(t, err)
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		assert.NoError(t, err)
+	}(file)
 
 	newTable := NewRecoverSSTable(0)
 	// First decode footer to get data block position
@@ -194,9 +200,9 @@ func TestGetValueByOffset(t *testing.T) {
 func TestMayContain(t *testing.T) {
 	table := createSampleSSTable(0)
 
-	assert.True(t, table.MayContain(kv.Key("key1")))
-	assert.True(t, table.MayContain(kv.Key("key2")))
-	assert.False(t, table.MayContain(kv.Key("nonexistent")))
+	assert.True(t, table.MayContain("key1"))
+	assert.True(t, table.MayContain("key2"))
+	assert.False(t, table.MayContain("nonexistent"))
 }
 
 func TestIdAndFilePath(t *testing.T) {
@@ -349,9 +355,9 @@ func TestMayContain_EdgeCases(t *testing.T) {
 	table.Header.MaxKey = "key2"
 
 	// 测试边界情况
-	assert.False(t, table.MayContain(kv.Key("key0"))) // 小于MinKey
-	assert.False(t, table.MayContain(kv.Key("key3"))) // 大于MaxKey
-	assert.False(t, table.MayContain(kv.Key("")))     // 空key
+	assert.False(t, table.MayContain("key0")) // 小于MinKey
+	assert.False(t, table.MayContain("key3")) // 大于MaxKey
+	assert.False(t, table.MayContain(""))     // 空key
 }
 
 func TestRemove_FileNotExist(t *testing.T) {
@@ -391,4 +397,19 @@ func TestConcurrentAccess(t *testing.T) {
 	for _, res := range results {
 		assert.NoError(t, res)
 	}
+}
+
+func TestEmptyDataBlock(t *testing.T) {
+	table := NewSSTable()
+
+	// 测试空数据块编码解码
+	err := table.EncodeTo("empty.sst")
+	assert.NoError(t, err)
+
+	newTable := NewRecoverSSTable(0)
+	err = newTable.DecodeFrom("empty.sst")
+	assert.NoError(t, err)
+
+	assert.Empty(t, newTable.DataBlock.Entries)
+	assert.Empty(t, newTable.IndexBlock.Indexes)
 }

@@ -75,9 +75,10 @@ func TestAsyncCompaction(t *testing.T) {
 		for j := 0; j < 10; j++ {
 			key := "key" + strconv.Itoa(i*10+j)
 			value := "value" + strconv.Itoa(i*10+j)
-			sst.DataBlock.Add([]byte(value))
-			sst.IndexBlock.Add(kv.Key(key), 0)
-			sst.FilterBlock.Add([]byte(key))
+			sst.Add(&kv.KeyValuePair{
+				Key:   kv.Key(key),
+				Value: []byte(value),
+			})
 		}
 		sst.Header = block.NewHeader("key0", kv.Key("key"+strconv.Itoa(i*10+9)))
 		tables = append(tables, sst)

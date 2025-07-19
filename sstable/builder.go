@@ -32,9 +32,7 @@ func BuildSSTableFromIMemTable(imem *memtable.IMemTable) *SSTable {
 
 // Add 向当前 DataBlock（[]kv.Value）添加记录；若当前 Block 满了，则创建新 Block。
 func (b *Builder) Add(pair *kv.KeyValuePair) {
-	b.table.DataBlock.Add(pair.Value)
-	b.table.IndexBlock.Add(pair.Key, 0)
-	b.table.FilterBlock.Add([]byte(pair.Key))
+	b.table.Add(pair)
 	b.size += pair.EstimateSize()
 }
 

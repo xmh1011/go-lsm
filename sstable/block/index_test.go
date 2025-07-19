@@ -23,9 +23,11 @@ func TestIndexEntry_Encode(t *testing.T) {
 			offset: 123,
 			expected: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.LittleEndian, uint32(4))  // key length
-				buf.Write([]byte("key1"))                          // key
-				binary.Write(buf, binary.LittleEndian, int64(123)) // offset
+				err := binary.Write(buf, binary.LittleEndian, uint32(4)) // key length
+				assert.NoError(t, err)
+				buf.Write([]byte("key1"))                                // key
+				err = binary.Write(buf, binary.LittleEndian, int64(123)) // offset
+				assert.NoError(t, err)
 				return buf.Bytes()
 			}(),
 		},
@@ -35,8 +37,10 @@ func TestIndexEntry_Encode(t *testing.T) {
 			offset: 0,
 			expected: func() []byte {
 				buf := new(bytes.Buffer)
-				binary.Write(buf, binary.LittleEndian, uint32(0)) // key length
-				binary.Write(buf, binary.LittleEndian, int64(0))  // offset
+				err := binary.Write(buf, binary.LittleEndian, uint32(0)) // key length
+				assert.NoError(t, err)
+				err = binary.Write(buf, binary.LittleEndian, int64(0)) // offset
+				assert.NoError(t, err)
 				return buf.Bytes()
 			}(),
 		},
@@ -68,6 +72,9 @@ func TestIndexBlock_EncodeDecode(t *testing.T) {
 	// 解码（关键修复点：使用 bytes.Reader 并确保数据正确）
 	data := buf.Bytes()
 	decodedBlock := NewIndexBlock()
+	// 验证非法size
+	err = decodedBlock.DecodeFrom(bytes.NewReader(data), -1)
+	assert.Error(t, err, "DecodeFrom should return error for negative size")
 	err = decodedBlock.DecodeFrom(bytes.NewReader(data), size)
 	assert.NoError(t, err)
 

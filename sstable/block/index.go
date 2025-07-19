@@ -62,12 +62,12 @@ func (b *IndexBlock) DecodeFrom(r io.Reader, size int64) error {
 	var totalRead int64 // 记录已读取的总字节数
 	b.Indexes = make([]*IndexEntry, 0)
 
-	for {
-		// 检查是否已读取足够的数据
-		if size > 0 && totalRead >= size {
-			break
-		}
+	if size < 0 {
+		log.Errorf("invalid size: %d, must be non-negative", size)
+		return fmt.Errorf("invalid size: %d, must be non-negative", size)
+	}
 
+	for totalRead < size {
 		// 1. 读取Key
 		var key kv.Key
 		keySize, err := key.DecodeFrom(r)
@@ -76,11 +76,6 @@ func (b *IndexBlock) DecodeFrom(r io.Reader, size int64) error {
 			return fmt.Errorf("decode index key length failed: %w", err)
 		}
 		totalRead += keySize
-		// 检查是否超出大小限制
-		if size > 0 && totalRead >= size {
-			log.Errorf("unexpected EOF: size limit reached while reading key length")
-			return fmt.Errorf("unexpected EOF: size limit reached while reading key length")
-		}
 
 		// 2. 读取Offset（8字节小端）
 		var offset int64
@@ -89,18 +84,17 @@ func (b *IndexBlock) DecodeFrom(r io.Reader, size int64) error {
 			return fmt.Errorf("decode index offset failed: %w", err)
 		}
 		totalRead += 8
+		// 检查是否超出大小限制
+		if totalRead > size {
+			log.Errorf("unexpected EOF: size limit reached while reading key length")
+			return fmt.Errorf("unexpected EOF: size limit reached while reading key length")
+		}
 
 		// 构造索引条目
 		b.Indexes = append(b.Indexes, &IndexEntry{
 			Key:    key,
 			Offset: offset,
 		})
-	}
-
-	// 如果指定了size但读取的字节数不足，可能是数据不完整
-	if totalRead < size {
-		log.Errorf("unexpected EOF: incomplete index block, read %d of %d bytes", totalRead, size)
-		return fmt.Errorf("unexpected EOF: incomplete index block, read %d of %d bytes", totalRead, size)
 	}
 
 	return nil

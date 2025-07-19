@@ -45,20 +45,19 @@ run: build
 	./$(OUTPUT_DIR)/bin/$(BINARY_NAME)
 
 # Clean up binary and temporary files
-clean:
-	@echo "Cleaning up..."
+clean: clean-data
+	@echo "Cleaning output file..."
 	rm -rf $(OUTPUT_DIR)
 	rm -rf $(TEST_FILE)
-	find . -type f \( -name "*.sst" -o -name "*.wal" \) -delete
-	find . -type d -name "data" -exec rm -rf {} +
 	$(GO) clean
 
 clean-data:
 	@echo "Cleaning up data files..."
 	find . -type f \( -name "*.sst" -o -name "*.wal" \) -delete
+	find . -type d -name "data" -exec rm -rf {} +
 
 # Test the application
-test: prepare test-case
+test: prepare clean test-case
 test-case:
 	@echo "Running tests..."
 	$(GO) test -v -cover $(GO_PACKAGES) -coverpkg=./... -coverprofile=coverage.txt | tee unittest.txt

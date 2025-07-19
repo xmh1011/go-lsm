@@ -1,31 +1,38 @@
 name: Continuous Integration
+
 on:
   pull_request:
     branches:
-      - main
+        - main
   push:
     branches:
-      - main
+        - main
 
 jobs:
-  LineLint:
-    name: line lint
+  line-lint:
+    name: Line Lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - name: install linelint
-        run: cargo install linelint-cli
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install linelint
+        run: cargo install linelint-cli --locked  # 添加 --locked 确保可重复安装
+
       - name: Run linelint check
         run: linelint check
 
-  GoLint:
-    name: "static check, style check, go vet and other go lint"
+  go-lint:
+    name: Go Lint (static check, style check, go vet, golangci-lint)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: "go.mod"
 
@@ -35,17 +42,14 @@ jobs:
       - name: Run style check
         run: make style-check
 
-      - name: Run go vet check
+      - name: Run go vet
         run: make go-vet-check
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3.6.0
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.56
-          args: --disable=staticcheck --timeout=10m --tests=false --skip-dirs=lifted --skip-dirs=tests
-          only-new-issues: true
-          skip-pkg-cache: true
-          skip-build-cache: true
+          version: v2.1  # 使用最新版本
+          args: --timeout=5m  # 添加超时参数避免卡死
 
   test:
     name: Run tests and collect coverage
@@ -58,12 +62,14 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
 
       - name: Install dependencies
         run: go mod download
 
       - name: Run tests
-        run: go test -cover $(go list ./...| grep -vE "vendor") -coverprofile=coverage.txt -coverpkg=./...
+        run: go test -cover $(go list ./... | grep -vE "vendor") -coverprofile=coverage.txt -coverpkg=./...
 
       - name: Upload results to Codecov
         uses: codecov/codecov-action@v5

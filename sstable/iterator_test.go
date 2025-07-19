@@ -56,13 +56,15 @@ func TestSSTableIterator(t *testing.T) {
 	original := createTestSSTable(t)
 	err := original.EncodeTo(filePath)
 	assert.NoError(t, err)
-	defer original.Remove()
 
 	// 重新加载SSTable进行测试
 	loaded := NewSSTable()
 	err = loaded.DecodeFrom(filePath)
 	assert.NoError(t, err)
-	defer loaded.Remove()
+	defer func(loaded *SSTable) {
+		err := loaded.Remove()
+		assert.NoError(t, err, "Failed to remove loaded SSTable file")
+	}(loaded)
 
 	t.Run("SequentialTraversal", func(t *testing.T) {
 		iter := NewSSTableIterator(loaded)

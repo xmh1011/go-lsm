@@ -19,6 +19,11 @@ const (
 
 var idGenerator atomic.Uint64
 
+// ResetIDGenerator 重置 ID 生成器
+func ResetIDGenerator() {
+	idGenerator.Store(0)
+}
+
 type Manager struct {
 	mu    sync.RWMutex
 	Mem   *MemTable
@@ -136,6 +141,7 @@ func (m *Manager) Recover() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	ResetIDGenerator()
 	// 收集所有 WAL 恢复数据
 	files, err := os.ReadDir(config.GetWALPath()) // 返回的是文件名，而不是文件完整路径
 	if err != nil {

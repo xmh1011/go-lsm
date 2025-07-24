@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -116,4 +117,64 @@ func TestAsyncCompaction(t *testing.T) {
 
 	// 5. 验证新文件生成
 	assert.True(t, len(mgr.getFilesByLevel(1)) > 0 || len(mgr.getFilesByLevel(2)) > 0)
+}
+
+func TestCompactionOnEmptyLevel0(t *testing.T) {
+	mgr := NewSSTableManager()
+
+	// 不添加任何 Level0 文件，直接压缩
+	err := mgr.Compaction()
+	assert.NoError(t, err, "compaction on empty level0 should not fail")
+
+	// 确认 Level0 和 Level1 都是空的
+	assert.Empty(t, mgr.totalMap[0])
+	assert.Empty(t, mgr.totalMap[1])
+}
+
+func TestCompactLevelWithNoFiles(t *testing.T) {
+	mgr := NewSSTableManager()
+
+	err := mgr.compactLevel(minSSTableLevel) // Level0
+	assert.NoError(t, err, "compacting empty level should not error")
+}
+
+func TestCompactionWithInvalidSSTable(t *testing.T) {
+	mgr := NewSSTableManager()
+
+	// 模拟一个无效的文件路径
+	mgr.totalMap[minSSTableLevel] = []string{"1.sst", "2.sst", "3.sst"}
+
+	err := mgr.Compaction()
+	assert.Error(t, err, "compaction should fail on invalid SSTable file")
+}
+
+func TestRecursiveCompactionAcrossLevels(t *testing.T) {
+	mgr := NewSSTableManager()
+
+	// 构造 Level0 -> Level1 -> Level2 的合并路径
+	for i := 0; i < 4; i++ {
+		mem := memtable.NewMemTable(uint64(i+1), t.TempDir())
+		_ = mem.Insert(kv.KeyValuePair{
+			Key:   kv.Key(fmt.Sprintf("key-%d", i)),
+			Value: []byte("val"),
+		})
+		imem := memtable.NewIMemTable(mem)
+		sst := BuildSSTableFromIMemTable(imem)
+		sst.level = minSSTableLevel
+		_ = mgr.addNewSSTables([]*SSTable{sst})
+	}
+
+	// 伪造更多 Level1 文件以触发下一层压缩
+	for i := 0; i < maxFileNumsInLevel(1); i++ {
+		sst := NewSSTableWithLevel(1)
+		sst.Header = block.NewHeader("keyA", "keyZ")
+		sst.Add(&kv.KeyValuePair{Key: "keyA", Value: []byte("valueA")})
+		sst.Add(&kv.KeyValuePair{Key: "keyZ", Value: []byte("valueZ")})
+		_ = mgr.addNewSSTables([]*SSTable{sst})
+	}
+
+	// 压缩，应触发 Level 0 -> Level1 -> Level2
+	err := mgr.Compaction()
+	assert.NoError(t, err)
+	assert.True(t, len(mgr.getFilesByLevel(2)) > 0, "should generate Level2 SSTables")
 }

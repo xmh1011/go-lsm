@@ -225,6 +225,7 @@ func (m *Manager) searchFromTable(sst *SSTable, key kv.Key) (kv.Value, error) {
 // Recover 加载所有层中 SSTable 的元数据信息到内存中
 func (m *Manager) Recover() error {
 	var maxID uint64
+	ResetIDGenerator()
 
 	for level := minSSTableLevel; level <= maxSSTableLevel; level++ {
 		dir := sstableLevelPath(level, config.GetSSTablePath())

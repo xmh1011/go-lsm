@@ -76,8 +76,9 @@ func (m *Manager) Delete(key kv.Key) (*IMemTable, error) {
 		log.Errorf("delete memtable error: %s", err.Error())
 		return nil, fmt.Errorf("delete memtable error: %w", err)
 	}
+
 	// 如果 memtable 中没有这个 key，但是说明有可能存在于内存中的 imemtable
-	// 而 imemtable 是不可变的，所以这时候需要在 memtable 中插入一条 nil 记录
+	// 而 imemtable 是不可变的，所以这时候需要在 memtable 中插入一条 deleted 记录
 	pair := kv.KeyValuePair{
 		Key:   key,
 		Value: kv.DeletedValue,
@@ -155,6 +156,12 @@ func (m *Manager) Recover() error {
 			// 并且处理自增 id 的逻辑
 			idGenerator.Add(util.ExtractID(file.Name()))
 		} else {
+			// 其他的都作为 IMemTable
+			err = mem.wal.Close()
+			if err != nil {
+				log.Errorf("close WAL file %s for imemtable failed: %s", file.Name(), err.Error())
+				return err
+			}
 			m.IMems = append(m.IMems, NewIMemTable(mem))
 		}
 	}

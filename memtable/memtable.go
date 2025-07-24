@@ -73,10 +73,7 @@ func (t *MemTable) Insert(pair kv.KeyValuePair) error {
 			return fmt.Errorf("error appending %+v to WAL: %w", pair, err)
 		}
 	}
-	// 估算大小
-	t.sizeInBytes += pair.EstimateSize()
-	// Writing the key/value pair in the Skiplist.
-	t.entries.Add(pair)
+	t.AddPair(pair)
 	return nil
 }
 
@@ -102,8 +99,25 @@ func (t *MemTable) ApproximateSize() uint64 {
 	return t.sizeInBytes
 }
 
+func (t *MemTable) ID() uint64 {
+	return t.id
+}
+
+func (t *MemTable) AddPairs(pairs []kv.KeyValuePair) {
+	for _, pair := range pairs {
+		t.AddPair(pair)
+	}
+}
+
+func (t *MemTable) AddPair(pair kv.KeyValuePair) {
+	// 估算大小
+	t.sizeInBytes += pair.EstimateSize()
+	// Writing the key/value pair in the Skiplist.
+	t.entries.Add(pair)
+}
+
 func (t *MemTable) CanInsert(pair kv.KeyValuePair) bool {
-	return t.sizeInBytes+pair.EstimateSize() <= maxMemoryTableSize
+	return t.ApproximateSize()+pair.EstimateSize() <= maxMemoryTableSize
 }
 
 // RecoverFromWAL constructs up to 10 IMemTable and 1 MemTable from WAL files.
@@ -123,15 +137,7 @@ func (t *MemTable) RecoverFromWAL(fileName string) error {
 		log.Errorf("recover WAL %s failed: %s", fileName, err.Error())
 		return fmt.Errorf("recover WAL %s failed: %w", fileName, err)
 	}
-
-	// Insert all pairs into the memtable
-	for _, pair := range pairs {
-		err = t.Insert(pair)
-		if err != nil {
-			log.Errorf("insert pair %+v to memtable failed: %s", pair, err.Error())
-			return fmt.Errorf("insert pair %+v to memtable failed: %w", pair, err)
-		}
-	}
+	t.AddPairs(pairs)
 
 	return nil
 }

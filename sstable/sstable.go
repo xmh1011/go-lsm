@@ -23,6 +23,11 @@ const (
 
 var idGenerator atomic.Uint64
 
+// ResetIDGenerator 重置 SSTable ID 生成器
+func ResetIDGenerator() {
+	idGenerator.Store(0)
+}
+
 // SSTable is an in-memory representation of the file on disk. An SSTable contains the data sorted by key.
 // SSTables can be created by flushing an immutable MemTable or by merging SSTables (/compaction).
 type SSTable struct {

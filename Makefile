@@ -58,6 +58,8 @@ clean-data:
 
 # Test the application
 test: prepare clean test-case
+	$(MAKE) clean-data
+
 test-case:
 	@echo "Running tests..."
 	$(GO) test -v -cover $(GO_PACKAGES) -coverpkg=./... -coverprofile=coverage.txt | tee unittest.txt
